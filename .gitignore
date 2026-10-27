@@ -28,3 +28,7 @@ pnpm-debug.log*
 
 # TypeScript build info
 *.tsbuildinfo
+
+# Blender auto-backups (keep .blend, ignore .blend1)
+*.blend1
+

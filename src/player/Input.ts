@@ -8,6 +8,7 @@ export type InputAction =
   | 'graph'
   | 'frame'
   | 'rewind'
+  | 'pause'
   | 'builder'
   | 'slot1'
   | 'slot2'
@@ -17,6 +18,7 @@ export type InputAction =
   | 'slot6'
   | 'inventory'
   | 'daynight'
+  | 'pioneers'
   | 'escape';
 
 type ActionListener = (action: InputAction) => void;
@@ -46,12 +48,14 @@ export class Input {
     g: 'graph',
     f: 'frame',
     r: 'rewind',
+    p: 'pause',
     '1': 'slot1',
     '2': 'slot2',
     '3': 'slot3',
     '4': 'slot4',
     '5': 'slot5',
     '6': 'slot6',
+    l: 'pioneers',
     n: 'daynight',
     Escape: 'escape',
   };

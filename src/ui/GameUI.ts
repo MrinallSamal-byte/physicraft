@@ -1,4 +1,5 @@
 import { BIOMES, GRAVITY_PRESETS, biomePathPoints, type BiomeId, type EnvironmentState, type GravityPreset } from '../config';
+import { PIONEERS, type Pioneer } from '../data/pioneers';
 import type { StationTab } from '../stations/BaseExperiment';
 import type { Station } from '../stations/registry';
 import type { ControlDef, ParamValue, Readout } from '../stations/types';
@@ -33,6 +34,7 @@ export interface StationLive {
   observationCue: string;
   observationCueIndex: number;
   observationTime: number;
+  hasObserved: boolean;
 }
 
 export interface BadgePayload {
@@ -77,6 +79,9 @@ export interface GameUICallbacks {
   onToggleDayNight?(): void;
   onClearBlocks?(): void;
   onInventoryClose?(): void;
+  onToggleBlenderModel?(): void;
+  onOpenPioneers?(): void;
+  onTravelCoordinates?(x: number, z: number): void;
 }
 
 interface ToolSpec {
@@ -87,6 +92,24 @@ interface ToolSpec {
   key: string;
   icon: string;
 }
+
+const PALETTE_LABELS: Record<VoxelBlockType, string> = {
+  grass: 'Grass',
+  dirt: 'Dirt',
+  stone: 'Stone',
+  cobblestone: 'Cobble',
+  planks: 'Planks',
+  brick: 'Bricks',
+  glass: 'Glass',
+  glowstone: 'Glowstone',
+  redstone: 'Redstone',
+  slime: 'Slime',
+  iron: 'Iron',
+  gold: 'Gold',
+  diamond: 'Diamond',
+  obsidian: 'Obsidian',
+  tnt: 'TNT',
+};
 
 const TOOLS: Record<ToolId, ToolSpec> = {
   goggles: {
@@ -116,7 +139,7 @@ const TOOLS: Record<ToolId, ToolSpec> = {
   book: {
     kicker: 'INSTRUMENT 04',
     name: 'Environment Manipulator',
-    short: 'Environ',
+    short: 'Env',
     description: 'Rewrite gravity, air density and friction',
     key: 'K',
     icon: ICONS.book,
@@ -130,12 +153,12 @@ const TOOLS: Record<ToolId, ToolSpec> = {
     icon: ICONS.graph,
   },
   block: {
-    kicker: 'CREATIVE 06',
-    name: 'Minecraft Voxel Builder',
+    kicker: 'INSTRUMENT 06',
+    name: 'Voxel Builder',
     short: 'Builder',
-    description: 'Mine and place authentic 16x16 voxel blocks anywhere',
+    description: 'Mine, place and test 14 material blocks',
     key: 'B',
-    icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.45"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>`,
+    icon: ICONS.block,
   },
 };
 
@@ -169,7 +192,7 @@ function toneClass(tone: Readout['tone']): string {
 
 function metricMarkup(metric: Readout): string {
   return `<div class="metric ${toneClass(metric.tone)}"><span>${esc(metric.label)}</span><b>${esc(metric.value)}${
-    metric.unit ? `<small>${esc(metric.unit)}</small>` : ''
+    metric.unit ? `<small>&#8202;${esc(metric.unit)}</small>` : ''
   }</b></div>`;
 }
 
@@ -213,6 +236,10 @@ export class GameUI {
   private stationOpen = false;
   private inventoryOverlay!: HTMLElement;
   private inventoryOpen = false;
+  private pioneersOverlay!: HTMLElement;
+  private pioneersOpen = false;
+  private pioneersCategory = 'all';
+  private blenderModelActive = true;
   private selectedCategory = 'all';
   private inspectedBlockType: VoxelBlockType = 'grass';
   private placedBlocksCount = 0;
@@ -268,7 +295,9 @@ export class GameUI {
             <div><small id="zone-sub">SECTOR 00 · SPAWN</small><b id="zone-name">THE HALL OF CONSTANTS</b></div>
           </div>
           <div class="hud-top-actions">
-            <button class="chip-button daynight-chip" id="daynight-chip" data-ui="daynight" title="Toggle Day Mode / Night Mode (N)"><span id="daynight-icon">☀️</span><span id="daynight-label">DAY</span><kbd>N</kbd></button>
+            <button class="chip-button" id="pioneers-chip" data-ui="pioneers" title="Hall of Pioneers & Laws (L)"><span class="pioneers-icon">🏛️</span><span>PIONEERS</span><kbd>L</kbd></button>
+            <button class="chip-button" id="model-chip" data-ui="model-toggle" title="Toggle Blender 5.2 Production Model"><span>🎨</span><span id="model-toggle-label">BLENDER 3D</span></button>
+            <button class="chip-button daynight-chip" id="daynight-chip" data-ui="daynight" title="Toggle day / night lighting (N)"><span id="daynight-icon" class="daynight-icon" aria-hidden="true">${ICONS.sun}</span><span id="daynight-label">DAY</span><kbd>N</kbd></button>
             <button class="chip-button" data-ui="atlas" title="Open the world atlas (M)">${ICONS.map}<span>ATLAS</span><kbd>M</kbd></button>
             <button class="chip-button" data-ui="manual" title="Open the field manual (H)">${ICONS.help}<span>MANUAL</span><kbd>H</kbd></button>
           </div>
@@ -286,7 +315,7 @@ export class GameUI {
         </div>
 
         <div class="hud-right">
-          <button class="env-chip hud-panel" id="env-chip" data-ui="env" title="Open the Environment Manipulator (B)">
+          <button class="env-chip hud-panel" id="env-chip" data-ui="env" title="Open the Environment Manipulator (K)">
             <span class="env-item"><small>GRAVITY</small><b id="env-gravity">9.81</b><em>m/s²</em></span>
             <span class="env-item"><small>AIR</small><b id="env-air">ATMOS</b><em id="env-air-density">1.225</em></span>
             <span class="env-item"><small>FRICTION</small><b id="env-friction">ROUGH</b><em id="env-friction-coefficient">0.55</em></span>
@@ -343,19 +372,19 @@ export class GameUI {
               ${BLOCK_PALETTE_ORDER.map((blockType, idx) => {
                 const meta = VOXEL_BLOCKS[blockType];
                 return `<button class="voxel-slot ${idx === 0 ? 'active' : ''}" data-voxel-block="${blockType}" title="${meta.name}">
-                  <span class="voxel-slot-key">${idx + 1 <= 9 ? idx + 1 : '0'}</span>
                   <span class="voxel-slot-swatch" style="background-color: #${meta.color.toString(16).padStart(6, '0')}"></span>
-                  <span class="voxel-slot-name">${meta.name}</span>
+                  <span class="voxel-slot-name">${PALETTE_LABELS[blockType] ?? meta.name}</span>
                 </button>`;
               }).join('')}
             </div>
             <div class="voxel-palette-tips">
               <span><b>L-CLICK</b> Mine</span>
               <span><b>R-CLICK</b> Place</span>
-              <span><b>SCROLL / 1-9</b> Select</span>
+              <span><b>SCROLL</b> Select</span>
+              <span><b>CLICK SLOT</b> Equip</span>
               <span><b>E / I</b> Inventory</span>
               <span><b>B</b> Exit</span>
-              <button class="palette-inv-toggle-btn" id="btn-open-creative-inv" title="Open Minecraft Creative Inventory (E / I)">📦 Materials</button>
+              <button class="palette-inv-toggle-btn" id="btn-open-creative-inv" title="Open the creative materials inventory (E / I)">${ICONS.crate} Materials</button>
             </div>
           </div>
           <div class="tool-caption" id="tool-caption"><small id="tool-kicker">INSTRUMENT 03</small><b id="tool-name">Telemetry Inspector Wand</b><span id="tool-desc"></span></div>
@@ -372,12 +401,12 @@ export class GameUI {
           <div class="time-head"><span class="time-mode" id="time-mode">REAL TIME</span><b id="time-clock">T + 0.0s</b></div>
           <div class="time-track"><div class="time-fill" id="time-fill"></div><span class="time-dot" id="time-dot"></span></div>
           <div class="time-buttons">
-            <button data-time="pause" title="Pause / resume (T cycles time)">${ICONS.pause}<span>PAUSE</span></button>
-            <button data-time="slow" title="Slow motion">${ICONS.slow}<span>SLOW</span></button>
+            <button data-time="pause" title="Pause / resume apparatus time (P)">${ICONS.pause}<span>PAUSE</span></button>
+            <button data-time="slow" title="Cycle slow motion: 0.10× then 0.04× (T)">${ICONS.slow}<span>SLOW</span></button>
             <button data-time="step" title="Advance one frame (F)">${ICONS.step}<span>STEP</span></button>
             <button data-time="rewind" title="Rewind the apparatus (R)">${ICONS.rewind}<span>REWIND</span></button>
           </div>
-          <div class="time-foot"><span>F frame · R rewind · T slow</span><span id="time-rate">1.00×</span></div>
+          <div class="time-foot"><span>P pause · T slow · F frame · R rewind</span><span id="time-rate">1.00×</span></div>
         </div>
 
         <div class="pause-prompt" id="pause-prompt" hidden>
@@ -405,13 +434,13 @@ export class GameUI {
         <div class="intro-content">
           <div class="intro-eyebrow"><span></span>AN INTERACTIVE FIELD LABORATORY<span></span></div>
           <h1>THE GRAND<br /><em>PHYSICS</em><br />SANDBOX</h1>
-          <p class="intro-lede">Six biomes. Seventeen experiments. One small universe whose rules you are allowed to touch. Observe closely, tinker recklessly, and prove what you understand.</p>
+          <p class="intro-lede">Six biomes. Seventeen working experiments. A small universe with rules you can test. Observe closely, adjust the apparatus, and prove what you understand.</p>
           <div class="intro-stats">
-            <span><b>17</b>experiments</span><span><b>06</b>biomes</span><span><b>05</b>instruments</span><span><b>17</b>discovery badges</span>
+            <span><b>17</b>experiments</span><span><b>06</b>biomes</span><span><b>06</b>instruments</span><span><b>17</b>discovery badges</span>
           </div>
           <div class="intro-actions">
             <button class="enter-button" id="enter-button"><span>ENTER THE SANDBOX</span>${ICONS.arrow}</button>
-            <span class="intro-hint">First-person · pointer lock · sound optional<br />Best explored at 1440 × 900 or larger</span>
+            <span class="intro-hint">WASD + mouse to explore · E inspect · M atlas · H manual<br />Click to capture the mouse · Esc releases it</span>
           </div>
           <div class="intro-biomes">${biomeChips}</div>
           <div class="intro-progress" id="intro-progress">EXPEDITION 00 / 17 · NEW FIELD LOG</div>
@@ -525,13 +554,14 @@ export class GameUI {
             </div>
             <div class="manual-grid">
               <section>
-                <h3>The five instruments</h3>
+                <h3>Six field instruments</h3>
                 <ol class="manual-tools">
                   <li><b>Vector Vision Goggles</b><span>Reveal velocity, acceleration, gravity, normal and friction arrows. Toggle with V.</span></li>
-                  <li><b>Time-Dilation Controller</b><span>Pause, slow to ¼× or 0.06×, frame-step, or rewind. T cycles slow, F advances a frame, R rewinds.</span></li>
+                  <li><b>Time-Dilation Controller</b><span>Pause, slow to 0.10× or 0.04×, frame-step, or rewind. P pauses, T cycles slow motion, F advances a frame, R rewinds.</span></li>
                   <li><b>Telemetry Inspector Wand</b><span>Aim at a moving body to read speed, acceleration, mass, momentum, kinetic and potential energy.</span></li>
-                  <li><b>Environment Manipulator Book</b><span>Override gravity, atmosphere and surface friction for the entire island. Press B.</span></li>
+                  <li><b>Environment Manipulator</b><span>Override gravity, atmosphere, surface friction and sky time for the entire island. Press K.</span></li>
                   <li><b>Graph Spawner Block</b><span>Deploy a physical chart board that records position, speed and energy in real time. Press G.</span></li>
+                  <li><b>Voxel Builder</b><span>Mine and place material blocks with live physics. Press B; left-click mines, right-click places, scroll selects, I opens the inventory.</span></li>
                 </ol>
               </section>
               <section>
@@ -544,10 +574,18 @@ export class GameUI {
                   <div><dt><kbd>ESC</kbd></dt><dd>Release controls / close a panel</dd></div>
                   <div><dt><kbd>M</kbd></dt><dd>World atlas and fast travel</dd></div>
                   <div><dt><kbd>H</kbd></dt><dd>This manual</dd></div>
-                  <div><dt><kbd>B</kbd></dt><dd>Environment book</dd></div>
+                  <div><dt><kbd>K</kbd></dt><dd>Environment Manipulator</dd></div>
+                  <div><dt><kbd>B</kbd></dt><dd>Toggle the voxel builder</dd></div>
+                  <div><dt><kbd>I</kbd></dt><dd>Creative materials inventory</dd></div>
+                  <div><dt><kbd>N</kbd></dt><dd>Toggle day / night lighting</dd></div>
                   <div><dt><kbd>G</kbd></dt><dd>Spawn or retract graph board</dd></div>
                   <div><dt><kbd>V</kbd></dt><dd>Toggle vector goggles</dd></div>
-                  <div><dt><kbd>1–5</kbd></dt><dd>Select an instrument</dd></div>
+                  <div><dt><kbd>P</kbd></dt><dd>Pause / resume apparatus time</dd></div>
+                  <div><dt><kbd>T</kbd></dt><dd>Cycle 0.10× / 0.04× slow motion</dd></div>
+                  <div><dt><kbd>F</kbd> <kbd>R</kbd></dt><dd>Step one frame / rewind</dd></div>
+                  <div><dt><kbd>1–6</kbd></dt><dd>Select an instrument</dd></div>
+                  <div><dt><kbd>DRAG</kbd></dt><dd>Orbit the focused apparatus</dd></div>
+                  <div><dt><kbd>WHEEL</kbd></dt><dd>Adjust inspection distance</dd></div>
                 </dl>
               </section>
             </div>
@@ -581,9 +619,9 @@ export class GameUI {
         <div class="modal inventory-modal">
           <header class="modal-head">
             <div class="inv-head-left">
-              <span class="inv-icon">📦</span>
+              <span class="inv-icon">${ICONS.crate}</span>
               <div>
-                <small>MINECRAFT CREATIVE INVENTORY</small>
+                <small>CREATIVE MATERIALS · VOXEL WORKBENCH</small>
                 <h2>Voxel Blocks & Physics Materials</h2>
               </div>
             </div>
@@ -604,7 +642,7 @@ export class GameUI {
               <div class="inspector-card">
                 <div class="inspector-preview" id="inv-inspect-preview"></div>
                 <h3 id="inv-inspect-title">Grass Block</h3>
-                <span class="inv-inspect-id" id="inv-inspect-id">minecraft:grass_block</span>
+                <span class="inv-inspect-id" id="inv-inspect-id">physicraft:grass</span>
                 <p class="inv-inspect-desc" id="inv-inspect-desc">Lush organic surface layer with soft soil foundation.</p>
                 <div class="inv-props" id="inv-inspect-props"></div>
                 <button class="btn primary" id="inv-select-btn">EQUIP IN HAND</button>
@@ -623,6 +661,35 @@ export class GameUI {
           </footer>
         </div>
       </section>
+
+      <section class="overlay pioneers-overlay" id="pioneers-overlay" hidden>
+        <div class="modal pioneers-modal">
+          <header class="modal-head">
+            <div class="pioneers-head-left">
+              <span class="pioneers-icon">🏛️</span>
+              <div>
+                <small>HALL OF PIONEERS · HISTORICAL ARCHIVE</small>
+                <h2>The Founders & Master Laws of Physics</h2>
+              </div>
+            </div>
+            <button class="icon-close" data-pioneers-close title="Close archive (Esc / L)">${ICONS.close}</button>
+          </header>
+
+          <div class="pioneers-categories" id="pioneers-categories">
+            <button class="pioneers-cat active" data-cat="all">ALL (28)</button>
+            <button class="pioneers-cat" data-cat="classical">MECHANICS (6)</button>
+            <button class="pioneers-cat" data-cat="thermo">THERMODYNAMICS (4)</button>
+            <button class="pioneers-cat" data-cat="electro">ELECTROMAGNETISM (5)</button>
+            <button class="pioneers-cat" data-cat="optics">OPTICS & WAVES (4)</button>
+            <button class="pioneers-cat" data-cat="relativity">RELATIVITY & GRAVITY (4)</button>
+            <button class="pioneers-cat" data-cat="quantum">QUANTUM & MODERN (5)</button>
+          </div>
+
+          <div class="pioneers-body">
+            <div class="pioneers-grid" id="pioneers-grid"></div>
+          </div>
+        </div>
+      </section>
     `;
   }
 
@@ -637,6 +704,7 @@ export class GameUI {
     this.helpOverlay = q('#help-overlay');
     this.badgeOverlay = q('#badge-overlay');
     this.inventoryOverlay = q('#inventory-overlay');
+    this.pioneersOverlay = q('#pioneers-overlay');
     this.pausePrompt = q('#pause-prompt');
     this.toastStack = q('#toast-stack');
     this.mapSvg = this.root.querySelector<SVGSVGElement>('#map-svg')!;
@@ -652,6 +720,8 @@ export class GameUI {
     });
     this.root.querySelector('#pause-prompt')?.addEventListener('click', () => this.callbacks.onResume());
     this.root.querySelector('#daynight-chip')?.addEventListener('click', () => this.callbacks.onToggleDayNight?.());
+    this.root.querySelector('#pioneers-chip')?.addEventListener('click', () => this.openPioneers());
+    this.root.querySelector('#model-chip')?.addEventListener('click', () => this.callbacks.onToggleBlenderModel?.());
     this.root.querySelector('#env-chip')?.addEventListener('click', () => this.callbacks.onOpenBook());
     this.root.querySelector('[data-ui="atlas"]')?.addEventListener('click', () => this.callbacks.onOpenMap());
     this.root.querySelector('[data-ui="manual"]')?.addEventListener('click', () => this.callbacks.onOpenHelp());
@@ -707,6 +777,21 @@ export class GameUI {
     this.root.querySelector('#btn-open-creative-inv')?.addEventListener('click', () => this.openInventory());
     this.inventoryOverlay.addEventListener('click', (event) => {
       if (event.target === this.inventoryOverlay) this.closeInventory();
+    });
+
+    this.root.querySelectorAll<HTMLElement>('[data-pioneers-close]').forEach((button) =>
+      button.addEventListener('click', () => this.closePioneers()),
+    );
+    this.pioneersOverlay.addEventListener('click', (event) => {
+      if (event.target === this.pioneersOverlay) this.closePioneers();
+    });
+    this.root.querySelectorAll<HTMLButtonElement>('#pioneers-categories button').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        this.root.querySelectorAll('#pioneers-categories button').forEach((b) => b.classList.remove('active'));
+        btn.classList.add('active');
+        this.pioneersCategory = btn.dataset.cat || 'all';
+        this.renderPioneers();
+      });
     });
 
     this.bindBookControls();
@@ -970,8 +1055,8 @@ export class GameUI {
     const distance = this.root.querySelector<HTMLElement>('#field-distance');
     if (!card || !name || !distance) return;
     if (!data) {
-      name.textContent = 'All beacons discovered';
-      distance.textContent = 'The island is quiet. Revisit any station.';
+      name.textContent = 'Between beacons';
+      distance.textContent = 'Follow a brass path · M opens the atlas';
       return;
     }
     card.style.setProperty('--accent', data.accent);
@@ -1126,6 +1211,13 @@ export class GameUI {
     });
   }
 
+  setTimeCardVisible(visible: boolean): void {
+    const card = this.root.querySelector<HTMLElement>('#time-card');
+    if (!card) return;
+    card.classList.toggle('is-idle', !visible);
+    card.setAttribute('aria-hidden', String(!visible));
+  }
+
   setPausePrompt(visible: boolean): void {
     this.pausePrompt.hidden = !visible;
   }
@@ -1211,11 +1303,12 @@ export class GameUI {
         <h2>${esc(meta.title)}</h2>
         <p class="station-subtitle">${esc(meta.subtitle)}</p>
         <div class="station-concept">${esc(meta.concept)}</div>
+        <p class="station-orbit-hint">Drag the field to orbit · scroll to adjust framing · E or Esc returns</p>
       </div>
       <div class="station-tabs" role="tablist">
         <button data-station-tab="observe" role="tab"><span>01</span>OBSERVE</button>
         <button data-station-tab="tinker" role="tab"><span>02</span>TINKER</button>
-        <button data-station-tab="intuition" role="tab"><span>03</span>INTUITION 💡</button>
+        <button data-station-tab="intuition" role="tab"><span>03</span>INTUITION</button>
         <button data-station-tab="solve" role="tab"><span>04</span>SOLVE</button>
       </div>
       <div class="station-body">
@@ -1285,7 +1378,7 @@ export class GameUI {
               </div>
 
               <div class="intuition-card sandbox-challenges">
-                <div class="intuition-kicker"><span>HANDS-ON SANDBOX EXPERIMENTS</span><b>Try These in Tinker Mode!</b></div>
+                <div class="intuition-kicker"><span>HANDS-ON EXPERIMENTS</span><b>Try these in Tinker mode</b></div>
                 <div class="challenge-steps">
                   ${intuition.interactiveThingsToTry
                     .map(
@@ -1295,7 +1388,7 @@ export class GameUI {
                         <div>
                           <b>${esc(t.action)}</b>
                           <p class="try-outcome">→ <em>Result:</em> ${esc(t.whatHappens)}</p>
-                          <p class="try-why">💡 <em>Why:</em> ${esc(t.why)}</p>
+                          <p class="try-why"><em>Why:</em> ${esc(t.why)}</p>
                         </div>
                       </div>`,
                     )
@@ -1309,8 +1402,8 @@ export class GameUI {
                   .map(
                     (m) => `
                     <div class="myth-row">
-                      <div class="myth-label">❌ <span>Myth:</span> ${esc(m.myth)}</div>
-                      <div class="reality-label">✅ <span>Reality:</span> ${esc(m.reality)}</div>
+                      <div class="myth-label"><span>Myth:</span> ${esc(m.myth)}</div>
+                      <div class="reality-label"><span>Reality:</span> ${esc(m.reality)}</div>
                     </div>`,
                   )
                   .join('')}
@@ -1531,7 +1624,7 @@ export class GameUI {
       observeButton.classList.toggle('running', live.observationActive);
       observeButton.innerHTML = live.observationActive
         ? `${ICONS.pause}<span>OBSERVING · ${live.observationTime.toFixed(1)}s</span>`
-        : `${ICONS.play}<span>${live.observationTime > 0.2 ? 'REPLAY OBSERVATION' : 'RUN OBSERVATION'}</span>`;
+        : `${ICONS.play}<span>${live.hasObserved ? 'REPLAY OBSERVATION' : 'RUN OBSERVATION'}</span>`;
     }
     const cueIndex = live.observationCueIndex;
     if (cueIndex !== this.lastCueIndex) {
@@ -1825,7 +1918,7 @@ export class GameUI {
     const iconEl = this.root.querySelector('#daynight-icon');
     const labelEl = this.root.querySelector('#daynight-label');
     const chipEl = this.root.querySelector('#daynight-chip');
-    if (iconEl) iconEl.textContent = isDay ? '☀️' : '🌙';
+    if (iconEl) iconEl.innerHTML = isDay ? ICONS.sun : ICONS.moon;
     if (labelEl) labelEl.textContent = isDay ? 'DAY' : 'NIGHT';
     if (chipEl) {
       chipEl.classList.toggle('is-night', !isDay);
@@ -1840,7 +1933,7 @@ export class GameUI {
   }
 
   // ---------------------------------------------------------------------------
-  // Minecraft Creative Inventory & Material Inspector
+  // Creative materials inventory & material inspector
   // ---------------------------------------------------------------------------
 
   openInventory(placedCount = 0): void {
@@ -1915,7 +2008,7 @@ export class GameUI {
     this.callbacks.onBlockSelect?.(type);
     sound.playToolSwitch();
     this.closeInventory();
-    this.toast('Block Equipped', `Equipped ${VOXEL_BLOCKS[type].name} in hand.`, '#a4ffd1', '⛏', 2000);
+    this.toast('Block Equipped', `Equipped ${VOXEL_BLOCKS[type].name} in hand.`, '#7ef9ff', '▣', 2000);
   }
 
   private renderInventory(): void {
@@ -1959,7 +2052,7 @@ export class GameUI {
     const props = this.root.querySelector('#inv-inspect-props');
 
     if (title) title.textContent = meta.name;
-    if (id) id.textContent = `physics:${meta.id}`;
+    if (id) id.textContent = `physicraft:${meta.id}`;
     if (desc) desc.textContent = meta.description;
 
     const colorHex = '#' + meta.color.toString(16).padStart(6, '0');
@@ -1973,9 +2066,9 @@ export class GameUI {
         <div class="prop-row"><span>Density ρ</span><b>${meta.density} kg/m³</b></div>
         <div class="prop-row"><span>Hardness</span><b>${meta.hardness.toFixed(1)}</b></div>
         <div class="prop-row"><span>Blast Resistance</span><b>${meta.blastResistance.toFixed(1)}</b></div>
-        ${meta.lightLevel ? `<div class="prop-row light"><span>Luminance</span><b>Level ${meta.lightLevel} ☀️</b></div>` : ''}
-        ${meta.bouncy ? `<div class="prop-row bounce"><span>Restitution e</span><b>0.85 (Slime) 🟢</b></div>` : ''}
-        ${meta.explosive ? `<div class="prop-row blast"><span>Detonation</span><b>Chain Primed 💥</b></div>` : ''}
+        ${meta.lightLevel ? `<div class="prop-row light"><span>Luminance</span><b>Level ${meta.lightLevel}</b></div>` : ''}
+        ${meta.bouncy ? `<div class="prop-row bounce"><span>Restitution e</span><b>0.85 (Slime)</b></div>` : ''}
+        ${meta.explosive ? `<div class="prop-row blast"><span>Detonation</span><b>Chain primed</b></div>` : ''}
         <div class="features-list">
           <small>PHYSICAL CAPABILITIES</small>
           <ul>${meta.physicsFeatures.map((f) => `<li>${esc(f)}</li>`).join('')}</ul>
@@ -2060,6 +2153,10 @@ export class GameUI {
   // ---------------------------------------------------------------------------
 
   closeTopOverlay(): boolean {
+    if (this.pioneersOpen) {
+      this.closePioneers();
+      return true;
+    }
     if (this.inventoryOpen) {
       this.closeInventory();
       return true;
@@ -2084,11 +2181,136 @@ export class GameUI {
   }
 
   get hasOverlayOpen(): boolean {
-    return this.mapOpen || this.bookOpen || this.helpOpen || this.badgeOpen || this.stationOpen || this.inventoryOpen;
+    return (
+      this.mapOpen ||
+      this.bookOpen ||
+      this.helpOpen ||
+      this.badgeOpen ||
+      this.stationOpen ||
+      this.inventoryOpen ||
+      this.pioneersOpen
+    );
+  }
+
+  openPioneers(): void {
+    if (this.pioneersOpen) return;
+    this.closeTopOverlay();
+    this.pioneersOverlay.hidden = false;
+    this.pioneersOpen = true;
+    this.renderPioneers();
+    this.syncBodyClasses();
+  }
+
+  closePioneers(): void {
+    if (!this.pioneersOpen) return;
+    this.pioneersOpen = false;
+    this.pioneersOverlay.hidden = true;
+    this.syncBodyClasses();
+  }
+
+  get isPioneersOpen(): boolean {
+    return this.pioneersOpen;
+  }
+
+  setBlenderModelActive(active: boolean): void {
+    this.blenderModelActive = active;
+    const label = this.root.querySelector('#model-toggle-label');
+    if (label) {
+      label.textContent = active ? 'BLENDER 3D: ON' : 'BLENDER 3D: OFF';
+    }
+    const btn = this.root.querySelector('#model-chip');
+    if (btn) {
+      btn.classList.toggle('active', active);
+    }
+  }
+
+  private renderPioneers(): void {
+    const grid = this.root.querySelector('#pioneers-grid');
+    if (!grid) return;
+
+    const filtered =
+      this.pioneersCategory === 'all'
+        ? PIONEERS
+        : PIONEERS.filter((p) => p.biome === this.pioneersCategory);
+
+    const biomeColors: Record<string, string> = {
+      classical: '#ffc26b',
+      thermo: '#72ffe5',
+      electro: '#a5b9ff',
+      optics: '#f0b7ff',
+      relativity: '#ffc2a5',
+      quantum: '#a4ffd1',
+    };
+
+    grid.innerHTML = filtered
+      .map((p) => {
+        const color = biomeColors[p.biome] || '#7ef9ff';
+        return `
+        <article class="pioneer-card" data-pioneer="${p.id}" style="--accent:${color}">
+          <div class="pioneer-img-wrap">
+            <div class="pioneer-img-backdrop" style="background-image: url('${p.portrait}')"></div>
+            <img class="pioneer-img" src="${p.portrait}" alt="${p.name}" loading="lazy" onerror="this.src='/portraits/galileo_raw.jpg'" />
+            <span class="pioneer-biome-badge" style="color:${color}">${p.biome}</span>
+          </div>
+          <div class="pioneer-info">
+            <div class="pioneer-name-row">
+              <h3 class="pioneer-name">${p.name}</h3>
+              <span class="pioneer-lifespan">${p.lifespan} · ${p.year}</span>
+            </div>
+            <div class="pioneer-discovery">${p.discovery}</div>
+            <div class="pioneer-formula-box">
+              <span class="pioneer-formula">${p.formula}</span>
+              ${p.subFormula ? `<span class="pioneer-subformula">${p.subFormula}</span>` : ''}
+            </div>
+            <p class="pioneer-desc">${p.significance}</p>
+            <div class="pioneer-actions">
+              <button class="pioneer-btn pioneer-btn-warp" data-warp-x="${p.position[0]}" data-warp-z="${p.position[1]}" data-p-name="${p.name}" title="Warp directly to apparatus">
+                <span>⚡</span><span>WARP</span>
+              </button>
+              <button class="pioneer-btn pioneer-btn-inspect" data-inspect-station="${p.stationId}" title="Inspect apparatus simulation">
+                <span>🔬</span><span>INSPECT</span>
+              </button>
+            </div>
+          </div>
+        </article>
+      `;
+      })
+      .join('');
+
+    // Bind warp buttons
+    grid.querySelectorAll<HTMLButtonElement>('.pioneer-btn-warp').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const x = parseFloat(btn.dataset.warpX || '0');
+        const z = parseFloat(btn.dataset.warpZ || '0');
+        const name = btn.dataset.pName || 'Station';
+        this.closePioneers();
+        if (this.callbacks.onTravelCoordinates) {
+          this.callbacks.onTravelCoordinates(x, z);
+        }
+        this.toast(`Warped to ${name}'s Experiment`, 'Apparatus in position', '#f4cf86', '🏛️');
+      });
+    });
+
+    // Bind inspect buttons
+    grid.querySelectorAll<HTMLButtonElement>('.pioneer-btn-inspect').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const stId = btn.dataset.inspectStation;
+        this.closePioneers();
+        if (stId) {
+          this.callbacks.onTravel(stId);
+        }
+      });
+    });
   }
 
   private syncBodyClasses(): void {
-    const anyOverlay = this.mapOpen || this.bookOpen || this.helpOpen || this.badgeOpen || this.inventoryOpen;
+    const anyOverlay =
+      this.mapOpen ||
+      this.bookOpen ||
+      this.helpOpen ||
+      this.badgeOpen ||
+      this.inventoryOpen ||
+      this.pioneersOpen;
     document.body.classList.toggle('overlay-open', anyOverlay);
   }
 

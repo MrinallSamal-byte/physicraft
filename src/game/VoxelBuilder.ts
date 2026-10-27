@@ -1,5 +1,5 @@
 /**
- * Minecraft-style Voxel Building & Mining System
+ * Voxel Building & Mining System
  * Handles crosshair raycasting, 3D wireframe voxel selection, block placement,
  * block destruction with burst debris particles, dynamic colliders,
  * and TNT physics detonation.
@@ -61,7 +61,7 @@ export class VoxelBuilder {
     this.group.name = 'VoxelBuilder';
     scene.add(this.group);
 
-    // 3D wireframe voxel bounding box cursor (Minecraft style)
+    // 3D wireframe voxel bounding box cursor
     const boxGeo = new THREE.BoxGeometry(1.005, 1.005, 1.005);
     const edges = new THREE.EdgesGeometry(boxGeo);
     this.selectionBox = new THREE.LineSegments(
@@ -137,7 +137,7 @@ export class VoxelBuilder {
       this.targetCoords = new THREE.Vector3(bx, by, bz);
       this.targetFaceNormal = normal.clone();
 
-      // Strictly snap to the dominant cardinal face normal (Minecraft standard)
+      // Strictly snap to the dominant cardinal face normal
       const absX = Math.abs(normal.x);
       const absY = Math.abs(normal.y);
       const absZ = Math.abs(normal.z);

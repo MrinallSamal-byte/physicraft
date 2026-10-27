@@ -443,11 +443,12 @@ export class BuoyancyExperiment extends Experiment {
 
   getTelemetryTargets(): TelemetryTarget[] {
     if (!this.block) return [];
+    const blockMass = Math.max(0.01, this.effectiveDensity() * this.blockSize ** 3);
     return [
-      this.makeTelemetry('buoyancy-block', this.block, `${MATERIAL_DENSITIES[this.str('material')]?.label ?? 'Block'} block`, this.effectiveDensity() * this.blockSize ** 3, () => ({
+      this.makeTelemetry('buoyancy-block', this.block, `${MATERIAL_DENSITIES[this.str('material')]?.label ?? 'Block'} block`, blockMass, () => ({
         position: this.block.position.clone(),
         velocity: new THREE.Vector3(0, this.state.vy, 0),
-        acceleration: new THREE.Vector3(0, (this.state.buoyant - this.state.weight) / Math.max(1, this.state.weight / 9.81), 0),
+        acceleration: new THREE.Vector3(0, (this.state.buoyant - this.state.weight) / blockMass, 0),
         potentialReference: this.tankBottom,
         extra: [
           { label: 'Buoyancy', value: `${(this.state.buoyant / 1000).toFixed(2)} kN` },
@@ -473,11 +474,12 @@ export class BuoyancyExperiment extends Experiment {
 
   override getGraphSample(): GraphSample {
     const depth = Math.max(0, this.surfaceY - this.state.y + this.blockSize / 2);
+    const blockMass = Math.max(0.01, this.effectiveDensity() * this.blockSize ** 3);
     return {
       t: this.simTime,
       position: depth,
       velocity: Math.abs(this.state.vy),
-      ke: 0.5 * (this.state.weight / 9.81) * this.state.vy ** 2,
+      ke: 0.5 * blockMass * this.state.vy ** 2,
       pe: this.state.weight * depth,
       primaryLabel: 'Block depth',
       secondaryLabel: 'Displaced block',
@@ -1153,18 +1155,19 @@ export class BernoulliExperiment extends Experiment {
         acceleration: new THREE.Vector3(0, (this.lift - 560) / 57, 0),
         extra: [
           { label: 'Lift', value: `${this.lift.toFixed(0)} N` },
-          { label: 'CL', value: this.computeLift({ gravity: 9.81, gravityPreset: 'earth', air: 'atmosphere', friction: 'frictionless', airDensity: 1.225, frictionCoefficient: 0 }).cl.toFixed(2) },
+          { label: 'CL', value: this.computeLift(this.currentEnv ?? { gravity: 9.81, gravityPreset: 'earth', air: 'atmosphere', friction: 'frictionless', airDensity: 1.225, frictionCoefficient: 0 }).cl.toFixed(2) },
         ],
       })),
     ];
   }
 
   override getGraphSample(): GraphSample {
+    const rho = this.currentEnv?.air === 'vacuum' ? 0 : (this.currentEnv?.airDensity ?? 1.225);
     return {
       t: this.simTime,
       position: this.lift,
       velocity: this.num('wind'),
-      ke: 0.5 * 1.225 * 0.95 * this.num('wind') ** 2,
+      ke: 0.5 * rho * 0.95 * this.num('wind') ** 2,
       pe: 0,
       primaryLabel: 'Lift',
       secondaryLabel: 'Wing section',

@@ -19,6 +19,10 @@ export const ICONS = {
   check: `<svg viewBox="0 0 24 24" ${stroke}><path d="m5 12.5 4.4 4.4L19 7.3"/></svg>`,
   spark: `<svg viewBox="0 0 24 24" ${stroke}><path d="M12 3v4M12 17v4M3 12h4M17 12h4M6.2 6.2l2.8 2.8M15 15l2.8 2.8M17.8 6.2 15 9M9 15l-2.8 2.8"/><circle cx="12" cy="12" r="2.2"/></svg>`,
   joystick: `<svg viewBox="0 0 24 24" ${stroke}><path d="M6.2 14.5h11.6c1 0 1.8.8 1.8 1.8v2.2c0 .9-.7 1.6-1.6 1.6H6c-.9 0-1.6-.7-1.6-1.6v-2.2c0-1 .8-1.8 1.8-1.8Z"/><path d="M12 14.5V9.2"/><circle cx="12" cy="6.4" r="2.8"/></svg>`,
+  sun: `<svg viewBox="0 0 24 24" ${stroke}><circle cx="12" cy="12" r="4"/><path d="M12 2.8v2.4M12 18.8v2.4M2.8 12h2.4M18.8 12h2.4M5.5 5.5l1.7 1.7M16.8 16.8l1.7 1.7M18.5 5.5l-1.7 1.7M7.2 16.8l-1.7 1.7"/></svg>`,
+  moon: `<svg viewBox="0 0 24 24" ${stroke}><path d="M19.4 14.6A8.1 8.1 0 0 1 9.4 4.6a8.2 8.2 0 1 0 10 10Z"/></svg>`,
+  crate: `<svg viewBox="0 0 24 24" ${stroke}><path d="M4.2 6.2h15.6v13.6H4.2V6.2Z"/><path d="M4.2 10h15.6M12 6.2v13.6M9 6.2v3.8M15 6.2v3.8"/></svg>`,
+  block: `<svg viewBox="0 0 24 24" ${stroke}><path d="M12 2.5 3 7.3l9 4.8 9-4.8-9-4.8Z"/><path d="M3 7.3v9.4l9 4.8 9-4.8V7.3"/><path d="M12 12.1v9.4"/></svg>`,
 } as const;
 
 export type IconName = keyof typeof ICONS;

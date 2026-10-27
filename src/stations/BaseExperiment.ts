@@ -34,6 +34,7 @@ export abstract class Experiment {
   solveCheckCooldown = 0;
   challengeStatus = 'Awaiting a trial.';
   lastObservationTime = 0;
+  hasObserved = false;
   updateCount = 0;
   protected currentEnv: EnvironmentState | null = null;
 
@@ -97,7 +98,7 @@ export abstract class Experiment {
       position: state.position.y,
       velocity: v,
       ke: 0.5 * mass * v * v,
-      pe: mass * 9.81 * Math.max(0, h),
+      pe: mass * (this.currentEnv?.gravity ?? 9.81) * Math.max(0, h),
     };
   }
 
@@ -153,6 +154,7 @@ export abstract class Experiment {
       }
     }
     this.observationActive = true;
+    this.hasObserved = true;
     this.challengeArmed = false;
     this.simTime = 0;
     this.resetSim();

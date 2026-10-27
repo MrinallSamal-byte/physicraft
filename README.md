@@ -33,7 +33,7 @@
 
 **Physicraft** is a browser-based 3D physics playground set on a floating island. Six themed biomes ring a central **Hall of Constants**, and each one holds a hand-built, interactive apparatus you can inspect, tune, and stress-test.
 
-There are **17 experiments**, **6 biomes**, **5 scientific instruments**, and **17 discovery badges**. Every experiment follows the same loop:
+There are **17 experiments**, **6 biomes**, **6 scientific instruments**, and **17 discovery badges**. Every experiment follows the same loop:
 
 > **OBSERVE** a guided demonstration → **TINKER** with the variables → **INTUITION** behind the equations → **SOLVE** a mastery trial and seal a badge.
 
@@ -63,8 +63,8 @@ The repo is named **Physicraft**; the in-game world is **The Grand Physics Sandb
 - **17 interactive experiments** across mechanics, thermodynamics, electromagnetism, optics, relativity, and quantum physics.
 - **A real simulation, not a slideshow** — closed-form and integrated physics, fixed 1/60 s time step, live parameter changes.
 - **Global environment overrides** — gravity from 0 to 24.79 m/s², vacuum or atmosphere, frictionless or rough surfaces, all shared by every apparatus.
-- **Deterministic time control** — pause, 0.1× slow motion, single-frame step, and rewind via event replay.
-- **Five scientific instruments** — vector goggles, time controller, telemetry wand, environment book, and a deployable graph board — plus a creative voxel builder.
+- **Deterministic time control** — pause, 0.10× or 0.04× slow motion, single-frame step, and rewind via event replay.
+- **Six scientific instruments** — vector goggles, time controller, telemetry wand, environment book, a deployable graph board, and a creative voxel builder.
 - **A voxel sandbox inside the sandbox** — 14 block types with real material properties: glowstone lights, bouncy slime, and TNT with cascading chain reactions.
 - **Discovery badges** that persist in `localStorage`, a world atlas with fast travel, and a guided field manual.
 - **Procedural everything** — 16×16 pixel-art textures, world labels, island geometry, and 16-bit-style sound effects synthesized with the Web Audio API.
@@ -124,7 +124,7 @@ Each experiment ships with:
 | Slot | Instrument | Key | What it does |
 |------|------------|-----|--------------|
 | 1 | **Vector Vision Goggles** | `V` | Overlays velocity, acceleration, gravity, normal, and friction arrows on tracked bodies. |
-| 2 | **Time-Dilation Controller** | `T` / `F` / `R` | Pause, slow to 0.1×, advance one 1/60 s frame, or rewind the session. |
+| 2 | **Time-Dilation Controller** | `P` / `T` / `F` / `R` | Pause, cycle 0.10× and 0.04× slow motion, advance one 1/60 s frame, or rewind the session. |
 | 3 | **Telemetry Inspector Wand** | `3` | Aim at a moving body to read speed, acceleration, mass, momentum, kinetic and potential energy. |
 | 4 | **Environment Manipulator** | `K` | Rewrites gravity, air density, surface friction, and sky time for the whole island. |
 | 5 | **Graph Spawner Block** | `G` | Deploys a floating oscilloscope that charts position, speed, and energy in real time. |
@@ -154,7 +154,8 @@ The HUD also includes a **world atlas** (`M`) with fast travel to any beacon, a 
 |-------|--------|
 | `1` … `6` | Select goggles, time controller, wand, environment book, graph, builder |
 | `V` | Toggle Vector Vision |
-| `T` | Toggle slow motion (0.1×) |
+| `P` | Pause / resume apparatus time |
+| `T` | Cycle slow motion: 0.10×, then 0.04×, then real time |
 | `F` | Advance a single 1/60 s frame |
 | `R` | Start / stop rewinding the current session |
 | `G` | Deploy or retract the graph board |
@@ -353,6 +354,6 @@ If you would like to reuse it, open an issue to discuss a license. An **MIT** li
 - [Three.js](https://threejs.org/) for the renderer and math.
 - [Vite](https://vite.dev/) and [TypeScript](https://www.typescriptlang.org/) for the toolchain.
 - [Fontsource](https://fontsource.org/) for Space Grotesk, JetBrains Mono, and Silkscreen.
-- The apparatus designs are love letters to the classic demonstrations that make physics click — Galileo's tower, Newton's cradle, Faraday's coil, Young's slits, and the rest.
+- The apparatus designs follow the classic demonstrations that make physics click — Galileo's tower, Newton's cradle, Faraday's coil, Young's slits, and the rest.
 
 <p align="center"><sub>Calibrating the constants of a small universe.</sub></p>

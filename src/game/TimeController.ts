@@ -84,6 +84,10 @@ export class TimeController {
     this.replaying = false;
     this.mode = 'flow';
     this.accumulator = 0;
+    this.sessionTime = 0;
+    this.maxSessionTime = 0;
+    this.rewindCursor = 0;
+    this.lastRebuildTarget = -1;
   }
 
   get activeExperiment(): Experiment | null {
@@ -119,7 +123,9 @@ export class TimeController {
   }
 
   toggleSlow(): void {
-    this.setMode(this.mode === 'slow' ? 'flow' : 'slow');
+    // Cycle through both slow-motion presets so the deep-slow mode is
+    // reachable from the keyboard and the time card.
+    this.setMode(this.mode === 'slow' ? 'very-slow' : this.mode === 'very-slow' ? 'flow' : 'slow');
   }
 
   togglePause(): void {
@@ -284,13 +290,24 @@ export class TimeController {
     this.events.push({ t: this.sessionTime, seq: this.seq++, kind: 'restart' });
   }
 
-  runObservation(): void {
+  runObservation(env: EnvironmentState): void {
     if (!this.experiment) return;
-    this.recordAction('observe');
-    this.mode = 'flow';
-    this.truncateFuture();
+    // A guided observation is a fresh scripted run. Re-baseline the session
+    // with the observation parameters so the clock, rewind history and the
+    // displayed session time all agree from 0.0 s.
     this.experiment.startObservation();
+    this.initialParams = { ...this.experiment.params };
+    this.initialEnv = cloneEnv(env);
+    this.lastEnvKey = envKey(env);
+    this.events = [];
+    this.seq = 0;
     this.sessionTime = 0;
+    this.maxSessionTime = 0;
+    this.accumulator = 0;
+    this.forked = false;
+    this.rewindCursor = 0;
+    this.lastRebuildTarget = -1;
+    this.mode = 'flow';
   }
 
   armChallenge(): void {

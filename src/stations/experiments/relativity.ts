@@ -588,7 +588,7 @@ export class SpacetimeExperiment extends Experiment {
         position: this.probe.position.clone(),
         velocity: new THREE.Vector3(this.state.vel.x, 0, this.state.vel.y).multiplyScalar(1.4),
         acceleration: new THREE.Vector3(-g * this.state.pos.x, 0, -g * this.state.pos.y).multiplyScalar(2.4),
-        gravity: new THREE.Vector3(-g * this.state.pos.x, 0, -g * this.state.pos.y).normalize().multiplyScalar(9.81),
+        gravity: new THREE.Vector3(-g * this.state.pos.x, 0, -g * this.state.pos.y).normalize().multiplyScalar(this.currentEnv?.gravity ?? 9.81),
         scale: 0.9,
       },
     ];

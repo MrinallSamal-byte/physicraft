@@ -1,5 +1,5 @@
 /**
- * Procedural 16x16 Pixel-Art Minecraft Texture Generator
+ * Procedural 16x16 Pixel-Art Voxel Texture Generator
  * Generates crisp, pixel-perfect voxel block textures in-memory
  * using HTML5 Canvas and THREE.CanvasTexture with NearestFilter.
  */

@@ -67,7 +67,7 @@ const MARKER_Y = 12.2;
 
 function makeStationLabel(station: Pick<Station, 'experiment' | 'solved'>): THREE.Sprite {
   const { experiment } = station;
-  const status = station.solved ? '◆ DISCOVERY BADGE CLAIMED' : 'AIRLOCK LOCKED · PRESS E';
+  const status = station.solved ? '◆ DISCOVERY BADGE CLAIMED' : 'PRESS E · INSPECT APPARATUS';
   const sprite = makeTextLabel(
     `${experiment.meta.number} · ${experiment.meta.shortTitle}`,
     status,

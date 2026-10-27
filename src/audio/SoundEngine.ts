@@ -1,6 +1,6 @@
 /**
  * Procedural Web Audio API Sound Engine
- * Generates retro-authentic 16-bit Minecraft-style sound effects
+ * Generates retro-authentic 16-bit field-instrument sound effects
  * entirely in real-time with zero external audio assets.
  */
 

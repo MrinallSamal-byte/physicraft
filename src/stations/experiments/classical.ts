@@ -403,8 +403,9 @@ export class VacuumDropExperiment extends Experiment {
     const dt = this.anvil?.landingTime != null && this.feather?.landingTime != null
       ? Math.abs(this.anvil.landingTime - this.feather.landingTime) * 1000
       : null;
+    const chamberVacuum = this.bool('vacuum') || env.air === 'vacuum';
     return [
-      { label: 'Chamber', value: this.bool('vacuum') ? 'VACUUM' : 'ATMOSPHERE', tone: this.bool('vacuum') ? 'accent' : 'muted' },
+      { label: 'Chamber', value: chamberVacuum ? 'VACUUM' : 'ATMOSPHERE', tone: chamberVacuum ? 'accent' : 'muted' },
       { label: 'Anvil', value: this.anvil?.landed ? `${this.anvil.landingTime!.toFixed(2)} s` : `${this.anvil ? Math.max(0, this.anvil.y - this.plateTop).toFixed(1) : '—'} m`, tone: 'warm' },
       { label: 'Feather', value: this.feather?.landed ? `${this.feather.landingTime!.toFixed(2)} s` : `${this.feather ? Math.max(0, this.feather.y - this.plateTop).toFixed(1) : '—'} m`, tone: 'cool' },
       { label: 'Landing gap', value: dt == null ? '—' : dt.toFixed(1), unit: dt == null ? undefined : 'ms', tone: dt != null && dt < 20 ? 'accent' : 'danger' },
@@ -414,11 +415,12 @@ export class VacuumDropExperiment extends Experiment {
 
   getTelemetryTargets(): TelemetryTarget[] {
     if (!this.anvil || !this.feather) return [];
+    const gravity = this.currentEnv?.gravity ?? 9.81;
     const make = (body: FallBody, label: string) =>
       this.makeTelemetry(body === this.anvil ? 'drop-anvil' : 'drop-feather', body.group, label, body.mass, () => ({
         position: new THREE.Vector3(body.group.position.x, body.y, body.group.position.z),
         velocity: new THREE.Vector3(0, body.velocityY, 0),
-        acceleration: new THREE.Vector3(0, body.landed ? 0 : -9.81, 0),
+        acceleration: new THREE.Vector3(0, body.landed ? 0 : -gravity, 0),
       }));
     return [make(this.anvil, 'Iron anvil'), make(this.feather, 'Feather')];
   }
@@ -447,7 +449,7 @@ export class VacuumDropExperiment extends Experiment {
       position: height,
       velocity: Math.abs(this.anvil.velocityY),
       ke: 0.5 * this.anvil.mass * this.anvil.velocityY ** 2,
-      pe: this.anvil.mass * 9.81 * height,
+      pe: this.anvil.mass * (this.currentEnv?.gravity ?? 9.81) * height,
       primaryLabel: 'Anvil height',
       secondaryLabel: 'Iron anvil',
     };
@@ -667,7 +669,7 @@ export class ProjectileExperiment extends Experiment {
     this.addStaticGlow([-8, 4.0, 2.2], '#ffb764', 1.6, 0.35);
 
     this.updateVisualControls();
-    this.refreshGhost(9.81);
+    this.refreshGhost(this.currentEnv?.gravity ?? 9.81);
   }
 
   private updateVisualControls(): void {
@@ -708,7 +710,7 @@ export class ProjectileExperiment extends Experiment {
     ring.position.set(13.5, 3.65, Math.sin(0) * 1.5);
     this.targetRing.userData.baseZ = 0;
     this.updateVisualControls();
-    this.refreshGhost(9.81);
+    this.refreshGhost(this.currentEnv?.gravity ?? 9.81);
   }
 
   private refreshGhost(gravity: number): void {
@@ -727,7 +729,7 @@ export class ProjectileExperiment extends Experiment {
     let y = 1.3 + Math.sin(angle) * 3.05;
     let vx = Math.cos(angle) * speedVal;
     let vy = Math.sin(angle) * speedVal;
-    const rho = airVal ? 1.225 : 0;
+    const rho = airVal && this.currentEnv?.air === 'atmosphere' ? this.currentEnv.airDensity : 0;
     const dt = 0.04;
     for (let i = 0; i < 200 && y >= 0.35; i++) {
       points.push(new THREE.Vector3(x, y, 0));
@@ -914,10 +916,11 @@ export class ProjectileExperiment extends Experiment {
 
   getTelemetryTargets(): TelemetryTarget[] {
     if (!this.projectile) return [];
+    const gravity = this.currentEnv?.gravity ?? 9.81;
     const target = this.makeTelemetry('projectile-orb', this.projectile, 'Artillery shell', 6, () => ({
       position: this.projectile.position.clone(),
       velocity: new THREE.Vector3(this.vx, this.vy, this.vz),
-      acceleration: new THREE.Vector3(0, -9.81, 0),
+      acceleration: new THREE.Vector3(0, -gravity, 0),
       extra: [{ label: 'Flight', value: `${this.simTime.toFixed(2)} s` }],
     }));
     return [target];
@@ -930,14 +933,14 @@ export class ProjectileExperiment extends Experiment {
       position: this.py,
       velocity: speed,
       ke: 0.5 * 6 * speed * speed,
-      pe: 6 * 9.81 * this.py,
+      pe: 6 * (this.currentEnv?.gravity ?? 9.81) * this.py,
       primaryLabel: 'Shell height',
       secondaryLabel: 'Artillery shell',
     };
   }
 
   protected onObservationStart(): void {
-    this.refreshGhost(9.81);
+    this.refreshGhost(this.currentEnv?.gravity ?? 9.81);
   }
 }
 
@@ -1521,7 +1524,7 @@ export class PendulumExperiment extends Experiment {
 
   step(dt: number, env: EnvironmentState): void {
     if (!this.pivot) return;
-    const damping = env.air === 'vacuum' ? 0.001 : 0.014;
+    const damping = 0.002 + (env.air === 'vacuum' ? 0 : env.airDensity) * 0.0098;
     const alpha = -(env.gravity / Math.max(0.1, this.armLength)) * Math.sin(this.theta) - damping * this.omega;
     this.omega += alpha * dt;
     this.previousTheta = this.theta;
@@ -1569,6 +1572,7 @@ export class PendulumExperiment extends Experiment {
 
   getTelemetryTargets(): TelemetryTarget[] {
     if (!this.bob) return [];
+    const gravity = this.currentEnv?.gravity ?? 9.81;
     const rodTip = new THREE.Vector3(
       Math.sin(this.theta) * this.armLength,
       7.65 - Math.cos(this.theta) * this.armLength,
@@ -1583,8 +1587,8 @@ export class PendulumExperiment extends Experiment {
           0,
         ),
         acceleration: new THREE.Vector3(
-          -Math.sin(this.theta) * (9.81 / Math.max(this.armLength, 0.1)) * this.armLength,
-          -Math.cos(this.theta) * (9.81 / Math.max(this.armLength, 0.1)) * this.armLength,
+          -Math.sin(this.theta) * (gravity / Math.max(this.armLength, 0.1)) * this.armLength,
+          -Math.cos(this.theta) * (gravity / Math.max(this.armLength, 0.1)) * this.armLength,
           0,
         ),
         potentialReference: 7.65 - this.armLength,
@@ -1594,14 +1598,13 @@ export class PendulumExperiment extends Experiment {
 
   override getGraphSample(): GraphSample {
     const mass = this.num('mass');
-    const height = 7.65 - Math.cos(this.theta) * this.armLength;
     const speed = Math.abs(this.omega) * this.armLength;
     return {
       t: this.simTime,
       position: this.theta,
       velocity: this.omega,
       ke: 0.5 * mass * speed * speed,
-      pe: mass * 9.81 * height,
+      pe: mass * (this.currentEnv?.gravity ?? 9.81) * this.armLength * (1 - Math.cos(this.theta)),
       primaryLabel: 'Pendulum angle',
       secondaryLabel: 'Brass bob',
     };

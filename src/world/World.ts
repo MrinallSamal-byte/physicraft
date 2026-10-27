@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import {
   BIOMES,
   BIOME_BY_ID,
@@ -61,6 +62,8 @@ export class World {
   private timeOfDay = 12.0; // 12:00 PM (High Noon - Default Day Mode)
   private dayCycleActive = false; // Day Mode is default and frozen in full sunlight unless toggled
   private dayCycleDuration = 480; // 8 minutes for 24h cycle
+  private blenderModel: THREE.Group | null = null;
+  private blenderModelVisible = true;
 
   constructor(private scene: THREE.Scene) {
     this.group.name = 'World';
@@ -74,7 +77,60 @@ export class World {
     this.createAmbientLife();
     this.createClouds();
     this.group.add(this.coreGroup);
+    this.loadBlenderModel();
     this.applyShadows();
+  }
+
+  private loadBlenderModel(): void {
+    const loader = new GLTFLoader();
+    loader.load(
+      '/models/physicraft_world.glb',
+      (gltf) => {
+        this.blenderModel = gltf.scene;
+        this.blenderModel.name = 'Blender_Production_World';
+        this.blenderModel.visible = this.blenderModelVisible;
+
+        this.blenderModel.traverse((child) => {
+          if ((child as THREE.Mesh).isMesh) {
+            const mesh = child as THREE.Mesh;
+            mesh.castShadow = true;
+            mesh.receiveShadow = true;
+            if (mesh.material) {
+              const mat = mesh.material as THREE.MeshStandardMaterial;
+              mat.roughness = Math.max(0.18, mat.roughness);
+              const physMat = mesh.material as THREE.MeshPhysicalMaterial;
+              if (physMat.transmission && physMat.transmission > 0) {
+                mat.transparent = true;
+                mat.opacity = 0.85;
+              }
+            }
+          }
+        });
+
+        this.group.add(this.blenderModel);
+        console.log('✅ Physicraft Blender 5.2 Production Model loaded successfully into Three.js world!');
+      },
+      (xhr) => {
+        if (xhr.total > 0) {
+          const pct = Math.round((xhr.loaded / xhr.total) * 100);
+          if (pct % 25 === 0) console.log(`Loading Blender 3D World: ${pct}%`);
+        }
+      },
+      (err) => {
+        console.warn('Notice: Blender GLB load deferred/fallback active:', err);
+      }
+    );
+  }
+
+  setBlenderModelVisible(visible: boolean): void {
+    this.blenderModelVisible = visible;
+    if (this.blenderModel) {
+      this.blenderModel.visible = visible;
+    }
+  }
+
+  isBlenderModelVisible(): boolean {
+    return this.blenderModelVisible;
   }
 
   private createSky(): void {
@@ -471,7 +527,7 @@ export class World {
     halo.material.depthWrite = false;
 
     const title = makeWorldTitle('The Hall of Constants', 'Spawn Rotunda · Grand Physics Sandbox', '#ffd48b', 3.1);
-    title.position.set(0, 12.5, 0);
+    title.position.set(0, 10.2, 0);
     this.group.add(title);
     this.gateLabels.push(title);
 
@@ -527,7 +583,7 @@ export class World {
       if (biome.id === 'classical') {
         this.buildMesa(local, c.x - 25, c.y - 18, rng, biome);
         this.buildMesa(local, c.x + 25, c.y - 13, rng, biome);
-        this.buildMesa(local, c.x + 18, c.y + 22, rng, biome);
+        this.buildMesa(local, c.x + 35, c.y + 18, rng, biome);
         for (let i = 0; i < 10; i++) {
           const x = c.x + (rng() - 0.5) * 55;
           const z = c.y + (rng() - 0.5) * 55;

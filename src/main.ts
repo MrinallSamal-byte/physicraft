@@ -41,7 +41,7 @@ renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.12;
 renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.shadowMap.type = THREE.PCFShadowMap;
 renderer.domElement.className = 'game-canvas';
 renderer.domElement.setAttribute('aria-label', 'The Grand Physics Sandbox first-person world');
 app.prepend(renderer.domElement);
@@ -146,7 +146,7 @@ let pausedByOverlay = false;
 let overlayResumeMode: Exclude<TimeMode, 'paused' | 'rewind'> = 'flow';
 
 function modalOpen(): boolean {
-  return ui.isMapOpen || ui.isBookOpen || ui.isHelpOpen || ui.isBadgeOpen || ui.isInventoryOpen;
+  return ui.isMapOpen || ui.isBookOpen || ui.isHelpOpen || ui.isBadgeOpen || ui.isInventoryOpen || ui.isPioneersOpen;
 }
 
 const ui = new GameUI(makeCallbacks(), app);
@@ -154,6 +154,7 @@ ui.configureStations(registry.stations.map(toMapStation));
 ui.setEnvironment(env);
 ui.setToolState({ goggles: gogglesOn, graph: graphVisible });
 ui.setTimeStatus(time.getStatus());
+ui.setTimeCardVisible(false);
 ui.setPausePrompt(false);
 ui.setIntroProgress(registry.getProgress().solved, registry.getProgress().total);
 
@@ -186,9 +187,9 @@ function toggleDayNight(): void {
   ui.setTimeOfDay(target);
   sound.playClick();
   if (isDay) {
-    ui.toast('🌙 Night Mode Enabled', 'Radiant moonlight & glowing biomes. Press N or use HUD to toggle Day.', '#7eb9ff', '🌙', 3200);
+    ui.toast('Night lighting engaged', 'Moonlight and luminous biomes. Press N or use the HUD chip to return to day.', '#7eb9ff', '◐', 3200);
   } else {
-    ui.toast('☀️ Day Mode Enabled', 'High noon sunlight physics & full visibility across all biomes.', '#ffe27a', '☀️', 3200);
+    ui.toast('Daylight restored', 'Full-spectrum sun across every biome. Press N to return to night.', '#ffe27a', '◑', 3200);
   }
 }
 
@@ -234,6 +235,26 @@ function makeCallbacks(): GameUICallbacks {
       ui.setPlacedBlocksCount(0);
     },
     onInventoryClose: requestControl,
+    onToggleBlenderModel: () => {
+      const next = !world.isBlenderModelVisible();
+      world.setBlenderModelVisible(next);
+      ui.setBlenderModelActive(next);
+      ui.toast(
+        next ? 'Blender 5.2 World Active' : 'Blender Model Hidden (Voxel Mode)',
+        next ? 'Full high-fidelity models, armillary & memorials enabled.' : 'Switched to lightweight voxel sandbox.',
+        '#f4cf86',
+        '🎨'
+      );
+    },
+    onOpenPioneers: () => {
+      input.exitPointerLock();
+      ui.openPioneers();
+    },
+    onTravelCoordinates: (x: number, z: number) => {
+      player.teleport(new THREE.Vector3(x, 1.68, z), 0);
+      viewmodel.triggerSwing();
+      sound.playDiscoveryJingle();
+    },
   };
 }
 
@@ -265,6 +286,7 @@ function focusStation(station: Station, tab: StationTab = 'observe'): void {
   vectors.setStationRoot(station.experiment.root);
   vectors.setEnabled(gogglesOn);
   ui.openStation(station, tab);
+  ui.setTimeCardVisible(true);
   ui.setTimeStatus(time.getStatus());
   refreshStationLive();
 
@@ -286,15 +308,16 @@ function makeOrbitRig(station: Station): OrbitRig {
   const radius = (rig.distance ?? layout.focusDistance) * 1.06;
   const height = rig.height ?? layout.focusHeight;
   const targetHeight = rig.targetHeight ?? Math.max(1.2, height * 0.45);
+  const targetX = 1.15 + radius * 0.05;
   return {
     station,
-    theta: 0.06,
+    theta: chooseOrbitTheta(station, radius, height, targetX, targetHeight),
     radius,
     minRadius: Math.max(5, radius * 0.55),
     maxRadius: Math.max(radius * 1.6, radius + 8),
     height,
     targetHeight,
-    targetX: 1.15 + radius * 0.05,
+    targetX,
     blend: 0,
     startPosition: camera.position.clone(),
     startQuaternion: camera.quaternion.clone(),
@@ -302,6 +325,67 @@ function makeOrbitRig(station: Station): OrbitRig {
     position: new THREE.Vector3(),
     quaternion: new THREE.Quaternion(),
   };
+}
+
+// Screen-space framing is chosen once when a station is opened. Bias toward
+// the authored front view, but step around any mesa, crystal or pylon that
+// would sit between the camera and the apparatus.
+const ORBIT_THETAS = [0.06, 0.4, -0.4, 0.8, -0.8, 1.2, -1.2, 1.7, -1.7, 2.3, -2.3];
+const orbitRaycaster = new THREE.Raycaster();
+const orbitCam = new THREE.Vector3();
+const orbitTargetPoint = new THREE.Vector3();
+const orbitSample = new THREE.Vector3();
+const orbitDirection = new THREE.Vector3();
+
+function isSolidHit(hit: THREE.Intersection): boolean {
+  const mesh = hit.object as THREE.Mesh;
+  if (!(mesh as THREE.Mesh & { isMesh?: boolean }).isMesh) return false;
+  const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+  return materials.some((material) => Boolean(material) && !material.transparent && material.opacity > 0.5);
+}
+
+function orbitClearSamples(station: Station, radius: number, height: number, targetX: number, targetHeight: number, theta: number): number {
+  const root = station.experiment.root;
+  orbitCam.set(targetX + Math.sin(theta) * radius, height, Math.cos(theta) * radius);
+  root.localToWorld(orbitCam);
+  let clear = 0;
+  for (const offsetX of [-1.2, 0, 1.2]) {
+    orbitTargetPoint.set(targetX + offsetX, targetHeight, 0);
+    root.localToWorld(orbitTargetPoint);
+    orbitDirection.copy(orbitTargetPoint).sub(orbitCam);
+    const distance = orbitDirection.length();
+    if (distance < 0.001) {
+      clear++;
+      continue;
+    }
+    orbitDirection.divideScalar(distance);
+    orbitRaycaster.set(orbitCam, orbitDirection);
+    orbitRaycaster.camera = camera;
+    orbitRaycaster.near = 0.05;
+    orbitRaycaster.far = Math.max(0.08, distance - 0.35);
+    const hit = orbitRaycaster.intersectObject(world.group, true).find(isSolidHit);
+    if (!hit) clear++;
+  }
+  return clear;
+}
+
+function chooseOrbitTheta(station: Station, radius: number, height: number, targetX: number, targetHeight: number): number {
+  station.experiment.root.updateWorldMatrix(true, false);
+  world.group.updateWorldMatrix(true, true);
+  let bestTheta = ORBIT_THETAS[0];
+  let bestScore = -Infinity;
+  for (const theta of ORBIT_THETAS) {
+    const clear = orbitClearSamples(station, radius, height, targetX, targetHeight, theta);
+    if (clear === 3) return theta;
+    // Prefer the clearest view, then the smallest orbit offset from the
+    // authored front view.
+    const score = clear * 10 - Math.abs(theta) * 0.2;
+    if (score > bestScore) {
+      bestScore = score;
+      bestTheta = theta;
+    }
+  }
+  return bestTheta;
 }
 
 function orbitTarget(rig: OrbitRig): THREE.Vector3 {
@@ -359,6 +443,8 @@ function closeFocus(): void {
   camera.updateProjectionMatrix();
   camera.position.copy(player.eyePosition);
   camera.rotation.set(player.pitch, player.yaw, 0, 'YXZ');
+  ui.setTimeCardVisible(false);
+  ui.updateObservationBanner(false, -1, '', 0);
   ui.setTimeStatus(time.getStatus());
   ui.setPausePrompt(false);
   requestControl();
@@ -428,7 +514,7 @@ function startObservation(): void {
   const station = focusedStation;
   if (!station) return;
   time.setMode('flow');
-  time.runObservation();
+  time.runObservation(env);
   ui.syncParams(station.experiment.params);
   ui.setTimeStatus(time.getStatus());
   time.recordEnvironment(env);
@@ -580,7 +666,7 @@ function selectTool(tool: ToolId): void {
     ui.setActiveVoxelBlock(voxelBuilder.getSelectedBlockType());
     ui.setVoxelPaletteVisible(true);
     if (!repeat) {
-      ui.toast('Voxel Builder Active', 'L-Click: Mine · R-Click: Place · Scroll: Switch Block', '#5ce0d8', '▧', 2800);
+      ui.toast('Voxel Builder Active', 'L-Click: Mine · R-Click: Place · Scroll: Switch Block', '#7ef9ff', '▧', 2800);
     }
   } else {
     voxelBuilder.setEnabled(false);
@@ -664,7 +750,15 @@ function cycleSlow(): void {
     return;
   }
   time.toggleSlow();
-  ui.setTimeStatus(time.getStatus());
+  const status = time.getStatus();
+  ui.setTimeStatus(status);
+  if (status.mode === 'slow') {
+    ui.toast('Slow motion', 'Apparatus time advances at 0.10× real time. Press T again for deep slow.', '#7ef9ff', '◷', 2600);
+  } else if (status.mode === 'very-slow') {
+    ui.toast('Deep slow motion', 'Apparatus time advances at 0.04× real time. Press T to return to real time.', '#7ef9ff', '◷', 2600);
+  } else if (status.mode === 'flow') {
+    ui.toast('Real time restored', 'Apparatus time is running at 1.00×.', '#7ef9ff', '◷', 2000);
+  }
 }
 
 function stepFrame(): void {
@@ -867,6 +961,7 @@ function refreshStationLive(): void {
     observationCue: cueIndex >= 0 ? cues[cueIndex].text : '',
     observationCueIndex: cueIndex,
     observationTime: experiment.simTime,
+    hasObserved: experiment.hasObserved,
   });
   ui.setTimeStatus(time.getStatus());
 }
@@ -968,6 +1063,14 @@ input.onAction((action) => {
     case 'help':
       openHelp();
       break;
+    case 'pioneers':
+      if (ui.isPioneersOpen) {
+        ui.closePioneers();
+      } else {
+        input.exitPointerLock();
+        ui.openPioneers();
+      }
+      break;
     case 'book':
       openBook();
       break;
@@ -987,6 +1090,9 @@ input.onAction((action) => {
       break;
     case 'rewind':
       toggleRewind();
+      break;
+    case 'pause':
+      togglePause();
       break;
     case 'slot1':
       selectTool('goggles');
@@ -1053,7 +1159,7 @@ renderer.domElement.addEventListener('pointermove', (event) => {
   const dy = event.clientY - dragY;
   dragX = event.clientX;
   dragY = event.clientY;
-  orbit.theta = clamp(orbit.theta - dx * 0.005, -1.15, 1.15);
+  orbit.theta = clamp(orbit.theta - dx * 0.005, -Math.PI, Math.PI);
   orbit.height = clamp(orbit.height + dy * orbit.radius * 0.006, orbit.targetHeight + 0.35, orbit.radius * 1.55);
 });
 

@@ -760,7 +760,7 @@ const photoMeta: ExperimentMeta = {
   badgeName: 'Quantum Gatekeeper',
   accent: '#a4ffd1',
   accentNumber: 0xa4ffd1,
-  badgeGlyph: '⚡',
+  badgeGlyph: '⌁',
   controls: [
     {
       id: 'material',
