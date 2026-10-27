@@ -55,6 +55,7 @@ const world = new World(scene);
 world.addCollider(new THREE.Vector3(0, 1.2, 0), new THREE.Vector3(5.4, 2.4, 5.4));
 
 const registry = new StationRegistry(scene, env);
+registry.addCollidersToWorld(world);
 const input = new Input(renderer.domElement);
 const player = new PlayerController(camera, input);
 player.setColliders(world.colliders);
@@ -65,6 +66,8 @@ const time = new TimeController();
 const vectors = new VectorOverlay();
 const telemetry = new TelemetryInspector(scene, camera);
 const graphBoard = new GraphBoard(scene);
+graphBoard.setCollidersRef(world.colliders);
+graphBoard.setStationsRef(registry.stations);
 const voxelBuilder = new VoxelBuilder(scene, camera);
 voxelBuilder.setCollidersRef(world.colliders);
 voxelBuilder.setOnBlockChanged(() => {
@@ -90,6 +93,8 @@ interface OrbitRig {
   height: number;
   targetHeight: number;
   targetX: number;
+  baseTargetX: number;
+  wantedTargetX: number;
   blend: number;
   startPosition: THREE.Vector3;
   startQuaternion: THREE.Quaternion;
@@ -146,12 +151,22 @@ let pausedByOverlay = false;
 let overlayResumeMode: Exclude<TimeMode, 'paused' | 'rewind'> = 'flow';
 
 function modalOpen(): boolean {
-  return ui.isMapOpen || ui.isBookOpen || ui.isHelpOpen || ui.isBadgeOpen || ui.isInventoryOpen || ui.isPioneersOpen;
+  return (
+    ui.isMapOpen ||
+    ui.isBookOpen ||
+    ui.isHelpOpen ||
+    ui.isBadgeOpen ||
+    ui.isInventoryOpen ||
+    ui.isPioneersOpen ||
+    ui.isGuideOpen
+  );
 }
 
-const ui = new GameUI(makeCallbacks(), app);
+const callbacks = makeCallbacks();
+const ui = new GameUI(callbacks, app);
 ui.configureStations(registry.stations.map(toMapStation));
 ui.setEnvironment(env);
+ui.setBlenderModelActive(world.isBlenderModelVisible());
 ui.setToolState({ goggles: gogglesOn, graph: graphVisible });
 ui.setTimeStatus(time.getStatus());
 ui.setTimeCardVisible(false);
@@ -239,12 +254,21 @@ function makeCallbacks(): GameUICallbacks {
       const next = !world.isBlenderModelVisible();
       world.setBlenderModelVisible(next);
       ui.setBlenderModelActive(next);
+      sound.playClick();
       ui.toast(
-        next ? 'Blender 5.2 World Active' : 'Blender Model Hidden (Voxel Mode)',
-        next ? 'Full high-fidelity models, armillary & memorials enabled.' : 'Switched to lightweight voxel sandbox.',
-        '#f4cf86',
-        '🎨'
+        next ? 'Blender 3D View Active' : 'Switched to Voxel Mode',
+        next
+          ? 'Full high-fidelity models, armillary & memorials enabled. Press B to toggle.'
+          : 'Switched to lightweight voxel sandbox. Press B to return to Blender 3D.',
+        next ? '#f4cf86' : '#7ef9ff',
+        next ? '🎨' : '🧊',
+        3200,
       );
+    },
+    onStationMinimizeChange: (minimized: boolean) => {
+      if (orbit) {
+        orbit.wantedTargetX = minimized ? 0.0 : orbit.baseTargetX;
+      }
     },
     onOpenPioneers: () => {
       input.exitPointerLock();
@@ -283,6 +307,9 @@ function focusStation(station: Station, tab: StationTab = 'observe'): void {
 
   time.beginSession(station.experiment, env);
   orbit = makeOrbitRig(station);
+  if (graphBoard.visible) {
+    graphBoard.reposition(camera, station, true);
+  }
   vectors.setStationRoot(station.experiment.root);
   vectors.setEnabled(gogglesOn);
   ui.openStation(station, tab);
@@ -308,15 +335,18 @@ function makeOrbitRig(station: Station): OrbitRig {
   const radius = (rig.distance ?? layout.focusDistance) * 1.06;
   const height = rig.height ?? layout.focusHeight;
   const targetHeight = rig.targetHeight ?? Math.max(1.2, height * 0.45);
-  const targetX = 1.15 + radius * 0.05;
+  const baseTargetX = 1.15 + radius * 0.05;
+  const targetX = ui.isStationMinimized ? 0.0 : baseTargetX;
   return {
     station,
-    theta: chooseOrbitTheta(station, radius, height, targetX, targetHeight),
+    theta: chooseOrbitTheta(station, radius, height, baseTargetX, targetHeight),
     radius,
     minRadius: Math.max(5, radius * 0.55),
     maxRadius: Math.max(radius * 1.6, radius + 8),
     height,
     targetHeight,
+    baseTargetX,
+    wantedTargetX: targetX,
     targetX,
     blend: 0,
     startPosition: camera.position.clone(),
@@ -406,6 +436,7 @@ function orbitPosition(rig: OrbitRig): THREE.Vector3 {
 function updateOrbit(dt: number): void {
   if (!orbit) return;
   orbit.blend = Math.min(1, orbit.blend + dt / 0.82);
+  orbit.targetX = THREE.MathUtils.damp(orbit.targetX, orbit.wantedTargetX, 6, dt);
   const target = orbitTarget(orbit);
   const wanted = orbitPosition(orbit);
   const look = new THREE.Matrix4().lookAt(wanted, target, new THREE.Vector3(0, 1, 0));
@@ -428,6 +459,9 @@ function closeFocus(): void {
   const station = focusedStation;
   focusedStation = null;
   orbit = null;
+  if (graphBoard.visible) {
+    graphBoard.reposition(camera, null, false);
+  }
   station.experiment.setFocused(false);
   station.experiment.observationActive = false;
   time.endSession();
@@ -702,8 +736,9 @@ function toggleGraphFromKey(): void {
 }
 
 function toggleGraphBoard(): void {
+  const isFocused = Boolean(focusedStation && ui.isStationOpen);
   const station = focusedStation ?? registry.getNearest(player.position, 26)?.station ?? null;
-  graphBoard.toggle(camera, station);
+  graphBoard.toggle(camera, station, isFocused);
   graphVisible = graphBoard.visible;
   ui.setToolState({ goggles: gogglesOn, graph: graphVisible });
   if (graphVisible) {
@@ -1030,9 +1065,19 @@ input.onAction((action) => {
     return;
   }
 
+  if (action === 'toggleMinimize') {
+    if (ui.isStationOpen) {
+      ui.toggleStationMinimize();
+    }
+    return;
+  }
+
   if (modalOpen()) return;
 
   switch (action) {
+    case 'blender':
+      callbacks.onToggleBlenderModel?.();
+      break;
     case 'interact': {
       if (ui.isStationOpen) {
         ui.closeStation();
@@ -1288,7 +1333,7 @@ function frame(now: number): void {
   vectors.update(dt, focusedStation?.experiment ?? null, env);
   updateWand(dt);
   graphBoard.update(dt, focusedStation, focusedStation?.experiment ?? null, env);
-  graphBoard.updateOrientation(camera, dt);
+  graphBoard.updateOrientation(camera, dt, focusedStation, Boolean(focusedStation && ui.isStationOpen));
 
   hudClock += dt;
   if (hudClock >= 0.085) {

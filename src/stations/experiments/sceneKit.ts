@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { makeCanvasTexture, makeReadoutTexture, roundRect } from '../../world/labels';
 
-/** A flat, readable sign board for station scenery. */
+/** A readable sign board for station scenery with a solid physical backing chassis and bezel. */
 export function addStationSign(
   parent: THREE.Object3D,
   title: string,
@@ -17,13 +17,40 @@ export function addStationSign(
     new THREE.MeshBasicMaterial({
       map: texture,
       transparent: true,
-      depthWrite: false,
+      depthWrite: true,
+      alphaTest: 0.05,
       toneMapped: false,
-      side: THREE.DoubleSide,
+      side: THREE.FrontSide,
     }),
   );
   mesh.position.set(...position);
   mesh.rotation.y = rotationY;
+
+  // Solid physical backing chassis (stops slicing and gives real-world physical thickness)
+  const casingHeight = size / 3;
+  const casing = new THREE.Mesh(
+    new THREE.BoxGeometry(size + 0.1, casingHeight + 0.08, 0.06),
+    new THREE.MeshStandardMaterial({
+      color: 0x0c1622,
+      roughness: 0.35,
+      metalness: 0.8,
+    }),
+  );
+  casing.position.set(0, 0, -0.031);
+  mesh.add(casing);
+
+  // Metallic accent trim rim
+  const trim = new THREE.Mesh(
+    new THREE.BoxGeometry(size + 0.12, casingHeight + 0.1, 0.015),
+    new THREE.MeshStandardMaterial({
+      color: new THREE.Color(accent).multiplyScalar(0.75),
+      roughness: 0.25,
+      metalness: 0.9,
+    }),
+  );
+  trim.position.set(0, 0, -0.042);
+  mesh.add(trim);
+
   parent.add(mesh);
   return mesh;
 }
@@ -120,11 +147,36 @@ export class CanvasBoard {
       new THREE.MeshBasicMaterial({
         map: this.texture,
         transparent: true,
-        depthWrite: false,
+        depthWrite: true,
+        alphaTest: 0.05,
         toneMapped: false,
-        side: THREE.DoubleSide,
+        side: THREE.FrontSide,
       }),
     );
+
+    // Solid physical casing behind monitor canvas
+    const casing = new THREE.Mesh(
+      new THREE.BoxGeometry(worldWidth + 0.12, worldHeight + 0.12, 0.08),
+      new THREE.MeshStandardMaterial({
+        color: 0x0a141e,
+        roughness: 0.35,
+        metalness: 0.85,
+      }),
+    );
+    casing.position.set(0, 0, -0.042);
+    this.mesh.add(casing);
+
+    // Outer alloy bezel
+    const bezel = new THREE.Mesh(
+      new THREE.BoxGeometry(worldWidth + 0.16, worldHeight + 0.16, 0.02),
+      new THREE.MeshStandardMaterial({
+        color: 0x223344,
+        roughness: 0.2,
+        metalness: 0.9,
+      }),
+    );
+    bezel.position.set(0, 0, -0.052);
+    this.mesh.add(bezel);
   }
 
   /** Draw immediately. Pass force=false to throttle redraws by seconds. */

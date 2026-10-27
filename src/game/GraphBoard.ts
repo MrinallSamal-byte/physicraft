@@ -7,8 +7,8 @@ import type { Experiment } from '../stations/BaseExperiment';
 import type { Station } from '../stations/registry';
 import type { GraphSample } from '../stations/types';
 
-const WIDTH = 5.6;
-const HEIGHT = 3.15;
+const WIDTH = 3.84;
+const HEIGHT = 2.16;
 const CANVAS_W = 1120;
 const CANVAS_H = 630;
 
@@ -31,6 +31,10 @@ export class GraphBoard {
   private accent = '#7ef9ff';
   private previousT = -1;
   private spawnBlend = 0;
+  private collidersRef: THREE.Box3[] = [];
+  private stationsRef: Station[] = [];
+  private targetPosition = new THREE.Vector3();
+  private isFocusedView = false;
 
   constructor(private readonly scene: THREE.Scene) {
     this.group.name = 'spawned-graph-board';
@@ -67,32 +71,132 @@ export class GraphBoard {
     const screenGeometry = new THREE.PlaneGeometry(WIDTH, HEIGHT);
     this.screen = new THREE.Mesh(
       screenGeometry,
-      new THREE.MeshBasicMaterial({ map: this.texture, transparent: true, toneMapped: false, side: THREE.DoubleSide }),
+      new THREE.MeshBasicMaterial({
+        map: this.texture,
+        transparent: true,
+        toneMapped: false,
+        depthWrite: true,
+        alphaTest: 0.05,
+        side: THREE.FrontSide,
+      }),
     );
     this.screen.position.z = 0.005;
     this.group.add(this.screen);
-    addGlowSprite(this.group, makeRadialGlowTexture(), [0, 0, -0.3], 8, '#73e7ff', 0.1);
+    addGlowSprite(this.group, makeRadialGlowTexture(), [0, 0, -0.3], 5.5, '#73e7ff', 0.1);
     this.scene.add(this.group);
     this.drawEmpty();
   }
 
-  toggle(camera: THREE.PerspectiveCamera, station: Station | null): void {
+  setCollidersRef(colliders: THREE.Box3[]): void {
+    this.collidersRef = colliders;
+  }
+
+  setStationsRef(stations: Station[]): void {
+    this.stationsRef = stations;
+  }
+
+  calculateSafePosition(camera: THREE.PerspectiveCamera, station: Station | null, isFocused: boolean): THREE.Vector3 {
+    const camDir = new THREE.Vector3();
+    camera.getWorldDirection(camDir);
+    const camRight = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
+    const camUp = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
+
+    const target = new THREE.Vector3();
+
+    if (isFocused && station) {
+      // In focus mode, camera orbits around station.worldPosition.
+      // Float the board neatly on the left side of the screen framing in clear air.
+      target.copy(camera.position)
+        .addScaledVector(camDir, 3.8)
+        .addScaledVector(camRight, -2.2)
+        .addScaledVector(camUp, 0.05);
+
+      // Station clearance guarantee: minimum 5.2m from apparatus center
+      const horizDist = Math.hypot(target.x - station.worldPosition.x, target.z - station.worldPosition.z);
+      const MIN_STATION_DIST = 5.2;
+      if (horizDist < MIN_STATION_DIST) {
+        // Pull back towards camera
+        const pull = (MIN_STATION_DIST - horizDist) + 0.6;
+        target.addScaledVector(camDir, -pull);
+      }
+    } else {
+      // First-person exploration view:
+      // Board floats 3.2m ahead, slightly to the side (+1.5m right)
+      target.copy(camera.position)
+        .addScaledVector(camDir, 3.2)
+        .addScaledVector(camRight, 1.5)
+        .addScaledVector(camUp, 0.05);
+
+      // Check distance against all station apparatus centers
+      for (const st of this.stationsRef) {
+        const dX = target.x - st.worldPosition.x;
+        const dZ = target.z - st.worldPosition.z;
+        const dist = Math.hypot(dX, dZ);
+        const SAFE_DIST = 5.0;
+        if (dist < SAFE_DIST) {
+          const playerDist = Math.hypot(camera.position.x - st.worldPosition.x, camera.position.z - st.worldPosition.z);
+          if (playerDist > SAFE_DIST) {
+            // Player is outside: pull board closer to player
+            const allowed = Math.max(1.8, playerDist - SAFE_DIST + 0.5);
+            target.copy(camera.position).addScaledVector(camDir, Math.min(3.0, allowed)).addScaledVector(camRight, 1.2);
+          } else {
+            // Player is inside: push board radially outward
+            const angle = dist > 0.01 ? Math.atan2(dZ, dX) : 0;
+            target.x = st.worldPosition.x + Math.cos(angle) * (SAFE_DIST + 0.6);
+            target.z = st.worldPosition.z + Math.sin(angle) * (SAFE_DIST + 0.6);
+          }
+        }
+      }
+    }
+
+    // Minimum ground clearance
+    target.y = Math.max(target.y, HEIGHT * 0.5 + 0.35);
+
+    // Obstacle depenetration against world colliders
+    if (this.collidersRef.length > 0) {
+      const halfW = WIDTH * 0.45;
+      const halfH = HEIGHT * 0.45;
+      const testBox = new THREE.Box3();
+      for (let iter = 0; iter < 4; iter++) {
+        testBox.min.set(target.x - halfW, target.y - halfH, target.z - halfW);
+        testBox.max.set(target.x + halfW, target.y + halfH, target.z + halfW);
+        let hitAny = false;
+        for (const col of this.collidersRef) {
+          if (testBox.intersectsBox(col)) {
+            hitAny = true;
+            const ox1 = testBox.max.x - col.min.x;
+            const ox2 = col.max.x - testBox.min.x;
+            const oz1 = testBox.max.z - col.min.z;
+            const oz2 = col.max.z - testBox.min.z;
+            const shiftX = ox1 < ox2 ? -ox1 : ox2;
+            const shiftZ = oz1 < oz2 ? -oz1 : oz2;
+            if (Math.abs(shiftX) < Math.abs(shiftZ)) {
+              target.x += shiftX;
+            } else {
+              target.z += shiftZ;
+            }
+          }
+        }
+        if (!hitAny) break;
+      }
+    }
+
+    return target;
+  }
+
+  toggle(camera: THREE.PerspectiveCamera, station: Station | null, isFocused = false): void {
     if (this.visible) {
       this.hide();
       return;
     }
-    this.spawn(camera, station);
+    this.spawn(camera, station, isFocused);
   }
 
-  spawn(camera: THREE.PerspectiveCamera, station: Station | null): void {
-    const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion).setY(0).normalize();
-    const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion).setY(0).normalize();
-    const position = camera.position
-      .clone()
-      .addScaledVector(forward, 6.4)
-      .addScaledVector(right, 2.6)
-      .add(new THREE.Vector3(0, 0.55, 0));
-    this.group.position.copy(position);
+  spawn(camera: THREE.PerspectiveCamera, station: Station | null, isFocused = false): void {
+    this.isFocusedView = isFocused;
+    const safePos = this.calculateSafePosition(camera, station, isFocused);
+    this.group.position.copy(safePos);
+    this.targetPosition.copy(safePos);
     this.faceCamera(camera);
     this.samples = [];
     this.previousT = -1;
@@ -102,6 +206,17 @@ export class GraphBoard {
     this.group.visible = true;
     this.visible = true;
     this.drawEmpty();
+  }
+
+  reposition(camera: THREE.PerspectiveCamera, station: Station | null, isFocused = false): void {
+    if (!this.visible) return;
+    this.isFocusedView = isFocused;
+    if (station && station.id !== this.stationId) {
+      this.stationId = station.id;
+      this.accent = station.accent;
+    }
+    const safePos = this.calculateSafePosition(camera, station, isFocused);
+    this.targetPosition.copy(safePos);
   }
 
   hide(): void {
@@ -146,12 +261,38 @@ export class GraphBoard {
     this.group.lookAt(camera.position);
   }
 
-  updateOrientation(camera: THREE.PerspectiveCamera, dt: number): void {
+  updateOrientation(camera: THREE.PerspectiveCamera, dt: number, station?: Station | null, isFocused?: boolean): void {
     if (!this.visible) return;
+    const focused = isFocused ?? Boolean(station);
+    this.isFocusedView = focused;
+
+    if (focused && station) {
+      // In focus mode, keep target updated with camera orbit position smoothly
+      const desired = this.calculateSafePosition(camera, station, true);
+      this.targetPosition.copy(desired);
+    } else {
+      // In first-person mode, check if player moved away or turned around
+      const dist = camera.position.distanceTo(this.group.position);
+      const camDir = new THREE.Vector3();
+      camera.getWorldDirection(camDir);
+      const toBoard = new THREE.Vector3().subVectors(this.group.position, camera.position).normalize();
+      const dot = camDir.dot(toBoard);
+
+      if (dist > 5.5 || dist < 1.8 || dot < 0.25) {
+        const desired = this.calculateSafePosition(camera, station ?? null, false);
+        this.targetPosition.copy(desired);
+      }
+    }
+
+    // Smooth position lerp
+    const lerpSpeed = focused ? 6.5 : 4.0;
+    this.group.position.lerp(this.targetPosition, Math.min(1, dt * lerpSpeed));
+
+    // Smooth rotation facing camera
     const dummy = new THREE.Object3D();
     dummy.position.copy(this.group.position);
     dummy.lookAt(camera.position);
-    this.group.quaternion.slerp(dummy.quaternion, Math.min(1, dt * 3.2));
+    this.group.quaternion.slerp(dummy.quaternion, Math.min(1, dt * 5.0));
   }
 
   private drawEmpty(): void {

@@ -39,6 +39,8 @@ const islandRng = seededRandom(0x51a7c0de);
 export class World {
   group = new THREE.Group();
   colliders: THREE.Box3[] = [];
+  baseColliders: THREE.Box3[] = [];
+  blenderColliders: THREE.Box3[] = [];
   biomeDecor: THREE.Group[] = [];
   coreGroup = new THREE.Group();
   private glowTexture = makeRadialGlowTexture();
@@ -108,6 +110,7 @@ export class World {
         });
 
         this.group.add(this.blenderModel);
+        this.generateBlenderColliders();
         console.log('✅ Physicraft Blender 5.2 Production Model loaded successfully into Three.js world!');
       },
       (xhr) => {
@@ -122,11 +125,57 @@ export class World {
     );
   }
 
+  private generateBlenderColliders(): void {
+    if (!this.blenderModel) return;
+    this.blenderColliders = [];
+    this.blenderModel.updateWorldMatrix(true, true);
+
+    const IGNORE_REGEX = /Streamline|Water|Ocean|Atmosphere|Volume|Trigger|Glow|Particle|Ray|Beam|Sky|Fog|Cloud|Wire|Floor|Ground|Base_Disc|Ring/i;
+
+    this.blenderModel.traverse((child) => {
+      if ((child as THREE.Mesh).isMesh) {
+        const mesh = child as THREE.Mesh;
+        const name = mesh.name || child.parent?.name || '';
+        if (IGNORE_REGEX.test(name)) return;
+
+        const mat = mesh.material as THREE.Material;
+        if (mat && mat.transparent && (mat.opacity ?? 1) < 0.6) return;
+
+        const box = new THREE.Box3().setFromObject(mesh);
+        if (box.isEmpty()) return;
+
+        const sizeX = box.max.x - box.min.x;
+        const sizeY = box.max.y - box.min.y;
+        const sizeZ = box.max.z - box.min.z;
+
+        // Obstacle criteria at player walking height:
+        if (box.min.y > 2.4 || box.max.y < 0.2) return;
+        if (sizeX > 35 || sizeZ > 35) return;
+        if (sizeX < 0.25 && sizeZ < 0.25) return;
+        if (sizeY < 0.22 && box.min.y <= 0.05) return;
+
+        this.blenderColliders.push(box);
+      }
+    });
+
+    this.rebuildColliders();
+    console.log(`✅ Loaded ${this.blenderColliders.length} Blender 3D obstacle colliders`);
+  }
+
+  rebuildColliders(): void {
+    this.colliders.length = 0;
+    for (const b of this.baseColliders) this.colliders.push(b);
+    if (this.blenderModelVisible) {
+      for (const b of this.blenderColliders) this.colliders.push(b);
+    }
+  }
+
   setBlenderModelVisible(visible: boolean): void {
     this.blenderModelVisible = visible;
     if (this.blenderModel) {
       this.blenderModel.visible = visible;
     }
+    this.rebuildColliders();
   }
 
   isBlenderModelVisible(): boolean {
@@ -304,6 +353,9 @@ export class World {
       if (height > 4.5) {
         batch.add(x, height + 1.5, z, width * 0.48, 3.2, width * 0.45, 0x3d5b50);
       }
+      if (height > 2.5) {
+        this.addCollider(new THREE.Vector3(x, height * 0.5, z), new THREE.Vector3(width * 0.7, height, width * 0.7));
+      }
     }
 
     // Decorative trees and crystal outcrops are kept off the paths.
@@ -318,7 +370,9 @@ export class World {
         if (new THREE.Vector2(x, z).distanceTo(biome.center) < 23) nearBiome = true;
       }
       if (nearBiome) continue;
-      addTree(batch, x, z, 0.7 + rng() * 0.6, rng() > 0.55 ? 0x517b62 : 0x476d5f);
+      const treeScale = 0.7 + rng() * 0.6;
+      addTree(batch, x, z, treeScale, rng() > 0.55 ? 0x517b62 : 0x476d5f);
+      this.addCollider(new THREE.Vector3(x, 2.5, z), new THREE.Vector3(1.2 * treeScale, 5.0, 1.2 * treeScale));
     }
 
     batch.build(this.group, 'island');
@@ -418,6 +472,7 @@ export class World {
           batch.add(pos.x, 1.2 + level * 1.35, pos.z, 1.35 * scale, 1.35, 1.35 * scale, level === 4 ? biome.color : 0x2d3f48);
         }
         batch.add(pos.x, 0.2, pos.z, 2.2, 0.4, 2.2, 0x1c2b32);
+        this.addCollider(new THREE.Vector3(pos.x, 3.8, pos.z), new THREE.Vector3(2.2, 7.6, 2.2));
       }
       const lintelY = 7.95;
       const lintelPos = gatePos.clone().addScaledVector(inward, 0.3);
@@ -428,7 +483,12 @@ export class World {
         glow: true,
         rotation: [0, -angle, 0],
       });
-      batch.add(gatePos.x, 10.0, gatePos.z, 3.6, 2.4, 0.35, 0x0a131d, {
+      // Archway banner signboard with physical backing chassis and glowing biome trim.
+      batch.add(lintelPos.x, 9.85, lintelPos.z, 5.4, 2.1, 0.4, 0x0a131d, {
+        rotation: [0, -angle, 0],
+      });
+      batch.add(lintelPos.x, 9.85, lintelPos.z, 5.48, 2.18, 0.36, biome.color, {
+        glow: true,
         rotation: [0, -angle, 0],
       });
 
@@ -438,25 +498,46 @@ export class World {
         new THREE.MeshBasicMaterial({
           map: label,
           transparent: true,
-          depthWrite: false,
+          depthWrite: true,
+          alphaTest: 0.05,
           toneMapped: false,
-          side: THREE.DoubleSide,
+          side: THREE.FrontSide,
         }),
       );
-      const signPos = gatePos.clone().addScaledVector(inward, 0.55);
-      labelMesh.position.set(signPos.x, 10.02, signPos.z);
+      const signPos = lintelPos.clone().addScaledVector(inward, 0.21);
+      labelMesh.position.set(signPos.x, 9.85, signPos.z);
       labelMesh.rotation.y = -angle + Math.PI;
       this.group.add(labelMesh);
 
-      // Path-side glyph monoliths.
+      // Path-side glyph monoliths with physical stone base, collar, biome cap, and collision.
       const glyphPos = gatePos.clone().addScaledVector(tangent, 5.9);
-      batch.add(glyphPos.x, 0.8, glyphPos.z, 0.8, 1.6, 0.8, 0x22333c);
+      batch.add(glyphPos.x, 0.2, glyphPos.z, 1.8, 0.4, 1.8, 0x18242c);
+      batch.add(glyphPos.x, 1.5, glyphPos.z, 1.5, 2.4, 0.8, 0x22333c, {
+        rotation: [0, -angle, 0],
+      });
+      batch.add(glyphPos.x, 0.45, glyphPos.z, 1.58, 0.1, 0.88, 0xc7a35d, {
+        rotation: [0, -angle, 0],
+      });
+      batch.add(glyphPos.x, 2.75, glyphPos.z, 1.54, 0.1, 0.84, biome.color, {
+        glow: true,
+        rotation: [0, -angle, 0],
+      });
+      this.addCollider(new THREE.Vector3(glyphPos.x, 1.4, glyphPos.z), new THREE.Vector3(1.8, 2.8, 1.8));
+
       const glyphTexture = makeReadoutTexture([`#${biome.index === 1 ? 'MOTION' : biome.discipline.split(' ')[0].toUpperCase()}`, biome.glyph], biome.accent, 320, 320);
       const glyph = new THREE.Mesh(
-        new THREE.PlaneGeometry(1.4, 1.4),
-        new THREE.MeshBasicMaterial({ map: glyphTexture, transparent: true, toneMapped: false, depthWrite: false }),
+        new THREE.PlaneGeometry(1.25, 1.25),
+        new THREE.MeshBasicMaterial({
+          map: glyphTexture,
+          transparent: true,
+          toneMapped: false,
+          depthWrite: true,
+          alphaTest: 0.05,
+          side: THREE.FrontSide,
+        }),
       );
-      glyph.position.set(glyphPos.x, 2.0, glyphPos.z);
+      const glyphFacePos = glyphPos.clone().addScaledVector(inward, 0.41);
+      glyph.position.set(glyphFacePos.x, 1.75, glyphFacePos.z);
       glyph.rotation.y = -angle + Math.PI;
       this.group.add(glyph);
     }
@@ -471,27 +552,94 @@ export class World {
     batch.add(0, 1.4, 0, 1.8, 2.8, 1.8, 0x20353e);
     batch.add(0, 3.0, 0, 2.4, 0.3, 2.4, 0xc7a35d);
     batch.add(0, 3.3, 0, 1.35, 0.18, 1.35, 0xf8dc98, { glow: true });
+    this.addCollider(new THREE.Vector3(0, 1.2, 0), new THREE.Vector3(5.4, 2.4, 5.4));
 
+    // =========================================================================
+    // The Hall of Constants — Free-standing grand physical monument at Sector 00
+    // Perfectly positioned on the southern entrance walkway (z = 5.2m).
+    // Mounted on an obsidian stone plinth, solid bronze stanchions, full 3D chassis,
+    // and rigid body physics collider so players can never walk inside or clip.
+    // =========================================================================
+    const monZ = 5.2;
+    // Granite foundation tier
+    batch.add(0, 0.35, monZ, 4.4, 0.7, 0.9, 0x1a2832);
+    // Polished brass plinth collar
+    batch.add(0, 0.74, monZ, 4.2, 0.12, 0.82, 0xc7a35d);
+    // Twin bronze structural mounting stanchions
+    batch.add(-1.6, 1.4, monZ, 0.22, 1.2, 0.22, 0xc7a35d);
+    batch.add(1.6, 1.4, monZ, 0.22, 1.2, 0.22, 0xc7a35d);
+    // Stanchion structural cross strut
+    batch.add(0, 1.25, monZ, 3.2, 0.08, 0.12, 0x1f303a);
+    // Dark alloy display chassis housing (depth 0.16m)
+    batch.add(0, 2.65, monZ, 4.5, 2.2, 0.16, 0x0c1622);
+    // Brass framing bezel rims
+    batch.add(0, 3.78, monZ, 4.56, 0.08, 0.18, 0xc7a35d); // top rim
+    batch.add(0, 1.52, monZ, 4.56, 0.08, 0.18, 0xc7a35d); // bottom rim
+    batch.add(-2.28, 2.65, monZ, 0.08, 2.24, 0.18, 0xc7a35d); // left rim
+    batch.add(2.28, 2.65, monZ, 0.08, 2.24, 0.18, 0xc7a35d); // right rim
+
+    // Rigid body collider preventing any player or object clipping through the monument
+    this.addCollider(new THREE.Vector3(0, 1.6, monZ), new THREE.Vector3(4.6, 3.2, 1.0));
+
+    // South Face (facing incoming explorer arriving from spawn at z = 14)
     const constTexture = makeReadoutTexture(
       [
         '#THE HALL OF CONSTANTS',
-        'c  299,792,458 m/s',
-        'g  9.81 m/s²  ·  G  6.674×10⁻¹¹',
-        'h  6.626×10⁻³⁴ J·s',
+        'c   299,792,458 m/s  ·  SPEED OF LIGHT IN VACUUM',
+        'g   9.80665 m/s²     ·  STANDARD ACCELERATION OF GRAVITY',
+        'G   6.67430×10⁻¹¹    ·  NEWTONIAN GRAVITATIONAL CONSTANT',
+        'h   6.62607×10⁻³⁴    ·  PLANCK CONSTANT  (ħ = 1.05457×10⁻³⁴)',
         'Every experiment here is a conversation with these numbers.',
       ],
       '#f5d48f',
-      1300,
-      700,
+      1400,
+      720,
     );
-    const constBoard = new THREE.Mesh(
-      new THREE.PlaneGeometry(4.7, 2.55),
-      new THREE.MeshBasicMaterial({ map: constTexture, transparent: true, toneMapped: false, depthWrite: false }),
+    const southBoard = new THREE.Mesh(
+      new THREE.PlaneGeometry(4.3, 2.05),
+      new THREE.MeshBasicMaterial({
+        map: constTexture,
+        transparent: true,
+        toneMapped: false,
+        depthWrite: true,
+        alphaTest: 0.05,
+        side: THREE.FrontSide,
+      }),
     );
-    constBoard.position.set(0, 3.45, 0.06);
-    constBoard.rotation.x = 0.1;
-    constBoard.rotation.y = Math.PI;
-    this.group.add(constBoard);
+    // Flush on south face of the 0.16m chassis (5.2 + 0.08 = 5.28 -> 5.285)
+    southBoard.position.set(0, 2.65, monZ + 0.085);
+    southBoard.rotation.y = 0; // Faces +Z towards approaching explorer
+    this.group.add(southBoard);
+
+    // North Face (facing explorer returning from central rotunda core)
+    const thermalConstTexture = makeReadoutTexture(
+      [
+        '#FUNDAMENTAL LAWS & CONSTANTS',
+        'e   1.60218×10⁻¹⁹ C  ·  ELEMENTARY ELECTRIC CHARGE',
+        'k_B 1.38065×10⁻²³    ·  BOLTZMANN CONSTANT (J/K)',
+        'N_A 6.02214×10²³     ·  AVOGADRO NUMBER (mol⁻¹)',
+        'ε₀  8.85419×10⁻¹²    ·  PERMITTIVITY OF FREE SPACE (F/m)',
+        'μ₀  1.25664×10⁻⁶     ·  PERMEABILITY OF FREE SPACE (N/A²)',
+      ],
+      '#7ef9ff',
+      1400,
+      720,
+    );
+    const northBoard = new THREE.Mesh(
+      new THREE.PlaneGeometry(4.3, 2.05),
+      new THREE.MeshBasicMaterial({
+        map: thermalConstTexture,
+        transparent: true,
+        toneMapped: false,
+        depthWrite: true,
+        alphaTest: 0.05,
+        side: THREE.FrontSide,
+      }),
+    );
+    // Flush on north face of the 0.16m chassis (5.2 - 0.08 = 5.12 -> 5.115)
+    northBoard.position.set(0, 2.65, monZ - 0.085);
+    northBoard.rotation.y = Math.PI; // Faces -Z towards central core
+    this.group.add(northBoard);
 
     const core = new THREE.Mesh(
       new THREE.IcosahedronGeometry(1.35, 1),
@@ -531,13 +679,14 @@ export class World {
     this.group.add(title);
     this.gateLabels.push(title);
 
-    // Benches / consoles around the hub.
+    // Benches / consoles around the hub with physical colliders.
     for (let i = 0; i < 6; i++) {
       const a = (i / 6) * Math.PI * 2 + Math.PI / 6;
       const x = Math.cos(a) * 20;
       const z = Math.sin(a) * 20;
       batch.add(x, 0.45, z, 2.8, 0.7, 0.85, 0x1d2b33, { rotation: [0, -a, 0] });
       batch.add(x, 0.83, z, 3.1, 0.1, 1.05, 0x8a6537, { rotation: [0, -a, 0] });
+      this.addCollider(new THREE.Vector3(x, 0.45, z), new THREE.Vector3(2.8, 0.9, 1.2));
     }
 
     batch.build(this.group, 'hub');
@@ -804,6 +953,7 @@ export class World {
 
   addCollider(center: THREE.Vector3, size: THREE.Vector3): THREE.Box3 {
     const box = new THREE.Box3().setFromCenterAndSize(center, size);
+    this.baseColliders.push(box);
     this.colliders.push(box);
     return box;
   }

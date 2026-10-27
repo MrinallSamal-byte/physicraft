@@ -31,9 +31,42 @@ function addSign(
   const texture = makeReadoutTexture([`#${title}`, subtitle], accent, 900, 300);
   const mesh = new THREE.Mesh(
     new THREE.PlaneGeometry(size, size / 3),
-    new THREE.MeshBasicMaterial({ map: texture, transparent: true, depthWrite: false, toneMapped: false, side: THREE.DoubleSide }),
+    new THREE.MeshBasicMaterial({
+      map: texture,
+      transparent: true,
+      depthWrite: true,
+      alphaTest: 0.05,
+      toneMapped: false,
+      side: THREE.FrontSide,
+    }),
   );
   mesh.position.set(...position);
+
+  // Solid physical backing casing preventing visual slicing
+  const casingHeight = size / 3;
+  const casing = new THREE.Mesh(
+    new THREE.BoxGeometry(size + 0.1, casingHeight + 0.08, 0.06),
+    new THREE.MeshStandardMaterial({
+      color: 0x0c1622,
+      roughness: 0.35,
+      metalness: 0.8,
+    }),
+  );
+  casing.position.set(0, 0, -0.031);
+  mesh.add(casing);
+
+  // Metallic trim
+  const trim = new THREE.Mesh(
+    new THREE.BoxGeometry(size + 0.12, casingHeight + 0.1, 0.015),
+    new THREE.MeshStandardMaterial({
+      color: new THREE.Color(accent).multiplyScalar(0.75),
+      roughness: 0.25,
+      metalness: 0.9,
+    }),
+  );
+  trim.position.set(0, 0, -0.042);
+  mesh.add(trim);
+
   parent.add(mesh);
   return mesh;
 }

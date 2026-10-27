@@ -1,5 +1,6 @@
 import { BIOMES, GRAVITY_PRESETS, biomePathPoints, type BiomeId, type EnvironmentState, type GravityPreset } from '../config';
 import { PIONEERS, type Pioneer } from '../data/pioneers';
+import { getExperimentSpotlight } from '../data/experimentSummaries';
 import type { StationTab } from '../stations/BaseExperiment';
 import type { Station } from '../stations/registry';
 import type { ControlDef, ParamValue, Readout } from '../stations/types';
@@ -80,6 +81,7 @@ export interface GameUICallbacks {
   onClearBlocks?(): void;
   onInventoryClose?(): void;
   onToggleBlenderModel?(): void;
+  onStationMinimizeChange?(minimized: boolean): void;
   onOpenPioneers?(): void;
   onTravelCoordinates?(x: number, z: number): void;
 }
@@ -220,6 +222,20 @@ export class GameUI {
   private mapPlayer: SVGGElement | null = null;
   private mapPlayerHead: SVGPathElement | null = null;
 
+  private minimapSvg!: SVGSVGElement;
+  private minimapPlayer: SVGGElement | null = null;
+  private minimapPlayerHead: SVGPathElement | null = null;
+  private minimapPlayerCone: SVGPathElement | null = null;
+  private minimapWaypointLine: SVGLineElement | null = null;
+  private minimapZoom: 1 | 2.5 = 1;
+  private selectedWaypointId: string | null = null;
+  private nearestStation: MapStation | null = null;
+  private compassRibbon!: HTMLElement;
+  private compassPins!: HTMLElement;
+  private compassBearingLabel!: HTMLElement;
+  private guideOverlay!: HTMLElement;
+  private guideOpen = false;
+
   private activeStation: Station | null = null;
   private currentTab: StationTab = 'observe';
   private stations: MapStation[] = [];
@@ -240,6 +256,7 @@ export class GameUI {
   private pioneersOpen = false;
   private pioneersCategory = 'all';
   private blenderModelActive = true;
+  private stationMinimized = false;
   private selectedCategory = 'all';
   private inspectedBlockType: VoxelBlockType = 'grass';
   private placedBlocksCount = 0;
@@ -295,13 +312,62 @@ export class GameUI {
             <div><small id="zone-sub">SECTOR 00 · SPAWN</small><b id="zone-name">THE HALL OF CONSTANTS</b></div>
           </div>
           <div class="hud-top-actions">
+            <button class="chip-button" id="tour-chip" data-ui="tour" title="Expedition Starter Tour & Recommendations"><span>🧭</span><span>TOUR GUIDE</span></button>
             <button class="chip-button" id="pioneers-chip" data-ui="pioneers" title="Hall of Pioneers & Laws (L)"><span class="pioneers-icon">🏛️</span><span>PIONEERS</span><kbd>L</kbd></button>
-            <button class="chip-button" id="model-chip" data-ui="model-toggle" title="Toggle Blender 5.2 Production Model"><span>🎨</span><span id="model-toggle-label">BLENDER 3D</span></button>
+            <button class="chip-button active" id="model-chip" data-ui="model-toggle" title="Toggle Blender 3D view (B)"><span>🎨</span><span id="model-toggle-label">BLENDER 3D</span><kbd>B</kbd></button>
             <button class="chip-button daynight-chip" id="daynight-chip" data-ui="daynight" title="Toggle day / night lighting (N)"><span id="daynight-icon" class="daynight-icon" aria-hidden="true">${ICONS.sun}</span><span id="daynight-label">DAY</span><kbd>N</kbd></button>
             <button class="chip-button" data-ui="atlas" title="Open the world atlas (M)">${ICONS.map}<span>ATLAS</span><kbd>M</kbd></button>
             <button class="chip-button" data-ui="manual" title="Open the field manual (H)">${ICONS.help}<span>MANUAL</span><kbd>H</kbd></button>
           </div>
         </header>
+
+        <!-- Top-Center In-World Heading Compass Ribbon -->
+        <div class="compass-ribbon hud-panel" id="compass-ribbon">
+          <div class="compass-needle">▼</div>
+          <div class="compass-tape-window">
+            <div class="compass-pins" id="compass-pins"></div>
+          </div>
+          <div class="compass-bearing-label" id="compass-bearing-label">000° N</div>
+        </div>
+
+        <!-- Top-Left Navigation Radar Minimap -->
+        <div class="minimap-deck hud-panel" id="minimap-deck">
+          <div class="minimap-head">
+            <div class="minimap-head-left">
+              <span class="minimap-ping"></span>
+              <span class="minimap-title">RADAR NAVIGATION</span>
+            </div>
+            <div class="minimap-head-right">
+              <span class="minimap-coords" id="minimap-coords">X 0 · Z 14</span>
+              <button class="minimap-ctrl-btn" id="minimap-zoom-btn" title="Toggle Zoom: 1× Full Island / 2.5× Local Tactical">1×</button>
+              <button class="minimap-ctrl-btn" id="minimap-tour-btn" title="Open Expedition Starter Tour">★ TOUR</button>
+              <button class="minimap-ctrl-btn" id="minimap-expand-btn" title="Open Full World Atlas (M)">[M]</button>
+            </div>
+          </div>
+          <div class="minimap-scope-container">
+            <svg id="minimap-svg" class="minimap-svg" viewBox="-124 -124 248 248" role="img" aria-label="Island Minimap Radar"></svg>
+            <div class="minimap-cardinals">
+              <span class="mc-cardinal mc-n">N</span>
+              <span class="mc-cardinal mc-e">E</span>
+              <span class="mc-cardinal mc-s">S</span>
+              <span class="mc-cardinal mc-w">W</span>
+            </div>
+            <div class="minimap-sweep"></div>
+          </div>
+          <div class="minimap-target-bar" id="minimap-target-bar">
+            <div class="target-left">
+              <span class="target-bearing-arrow" id="minimap-bearing-arrow">▲</span>
+              <div class="target-text">
+                <span class="target-label" id="minimap-target-label">NEAREST EXPERIMENT</span>
+                <b class="target-title" id="minimap-target-name">Scanning...</b>
+              </div>
+            </div>
+            <div class="target-right">
+              <span class="target-dist-val" id="minimap-target-dist">-- m</span>
+              <button class="minimap-warp-btn" id="minimap-warp-btn" title="Warp directly to this apparatus">WARP</button>
+            </div>
+          </div>
+        </div>
 
         <div class="discoveries hud-panel" id="discoveries">
           <div class="discoveries-head"><span>DISCOVERY LOG</span><b id="badge-count">00 / 17</b></div>
@@ -392,9 +458,18 @@ export class GameUI {
         </div>
 
         <div class="key-hints hud-panel" id="key-hints">
-          <span><kbd>WASD</kbd> move</span><span><kbd>⇧</kbd> sprint</span><span><kbd>SPACE</kbd> jump</span>
-          <span><kbd>B</kbd> voxel build</span><span><kbd>L-Click</kbd> mine</span><span><kbd>R-Click</kbd> place</span>
-          <span><kbd>E</kbd> inspect</span><span><kbd>M</kbd> atlas</span>
+          <div class="hints-row">
+            <span><kbd>WASD</kbd> Move</span>
+            <span><kbd>⇧</kbd> Sprint</span>
+            <span><kbd>SPACE</kbd> Jump</span>
+            <span><kbd>E</kbd> Inspect</span>
+          </div>
+          <div class="hints-row">
+            <button class="hint-click-btn" data-ui-hint="atlas" title="Open World Atlas (M)"><kbd>M</kbd> Atlas</button>
+            <button class="hint-click-btn" data-ui-hint="model" title="Toggle Blender 3D View (B)"><kbd>B</kbd> 3D</button>
+            <button class="hint-click-btn" data-ui-hint="pioneers" title="Hall of Pioneers (L)"><kbd>L</kbd> Pioneers</button>
+            <button class="hint-click-btn" data-ui-hint="guide" title="Expedition Starter Tour"><kbd>★</kbd> Tour</button>
+          </div>
         </div>
 
         <div class="time-card hud-panel" id="time-card" data-mode="flow">
@@ -575,7 +650,8 @@ export class GameUI {
                   <div><dt><kbd>M</kbd></dt><dd>World atlas and fast travel</dd></div>
                   <div><dt><kbd>H</kbd></dt><dd>This manual</dd></div>
                   <div><dt><kbd>K</kbd></dt><dd>Environment Manipulator</dd></div>
-                  <div><dt><kbd>B</kbd></dt><dd>Toggle the voxel builder</dd></div>
+                  <div><dt><kbd>B</kbd></dt><dd>Toggle Blender 3D view / Voxel mode</dd></div>
+                  <div><dt><kbd>TAB</kbd></dt><dd>Minimize / expand experiment panel</dd></div>
                   <div><dt><kbd>I</kbd></dt><dd>Creative materials inventory</dd></div>
                   <div><dt><kbd>N</kbd></dt><dd>Toggle day / night lighting</dd></div>
                   <div><dt><kbd>G</kbd></dt><dd>Spawn or retract graph board</dd></div>
@@ -690,6 +766,27 @@ export class GameUI {
           </div>
         </div>
       </section>
+
+      <section class="overlay guide-overlay" id="guide-overlay" hidden>
+        <div class="modal guide-modal">
+          <header class="modal-head">
+            <div class="guide-head-left">
+              <span class="guide-icon">🧭</span>
+              <div>
+                <small>EXPEDITION STARTER CURRICULUM & ROADMAP</small>
+                <h2>The 6 Realms of Physics · Field Guide</h2>
+              </div>
+            </div>
+            <button class="icon-close" data-guide-close title="Close guide (Esc)">${ICONS.close}</button>
+          </header>
+          <div class="guide-intro-banner">
+            <p>Welcome, Explorer. Follow this curated path across the 6 realms of physics. Click <b>WARP</b> to teleport instantly to any apparatus, or click <b>TRACK</b> to lock it onto your Top-Left Radar and Compass.</p>
+          </div>
+          <div class="guide-body">
+            <div class="guide-grid" id="guide-grid"></div>
+          </div>
+        </div>
+      </section>
     `;
   }
 
@@ -705,9 +802,14 @@ export class GameUI {
     this.badgeOverlay = q('#badge-overlay');
     this.inventoryOverlay = q('#inventory-overlay');
     this.pioneersOverlay = q('#pioneers-overlay');
+    this.guideOverlay = q('#guide-overlay');
     this.pausePrompt = q('#pause-prompt');
     this.toastStack = q('#toast-stack');
     this.mapSvg = this.root.querySelector<SVGSVGElement>('#map-svg')!;
+    this.minimapSvg = this.root.querySelector<SVGSVGElement>('#minimap-svg')!;
+    this.compassRibbon = q('#compass-ribbon');
+    this.compassPins = q('#compass-pins');
+    this.compassBearingLabel = q('#compass-bearing-label');
   }
 
   private bindEvents(): void {
@@ -719,6 +821,51 @@ export class GameUI {
       this.callbacks.onStart();
     });
     this.root.querySelector('#pause-prompt')?.addEventListener('click', () => this.callbacks.onResume());
+    this.root.querySelector('#tour-chip')?.addEventListener('click', () => this.openGuide());
+    this.root.querySelector('#minimap-tour-btn')?.addEventListener('click', () => this.openGuide());
+    this.root.querySelector('#minimap-expand-btn')?.addEventListener('click', () => this.callbacks.onOpenMap());
+    this.root.querySelector('#minimap-zoom-btn')?.addEventListener('click', () => {
+      this.minimapZoom = this.minimapZoom === 1 ? 2.5 : 1;
+      const btn = this.root.querySelector<HTMLButtonElement>('#minimap-zoom-btn');
+      if (btn) btn.textContent = this.minimapZoom === 1 ? '1×' : '2.5×';
+      this.updateMinimap(this.playerPosition.x, this.playerPosition.z, this.playerPosition.yaw);
+    });
+    this.root.querySelector('#minimap-warp-btn')?.addEventListener('click', () => {
+      const targetId = this.selectedWaypointId ?? this.nearestStation?.id;
+      if (targetId) this.travel(targetId);
+    });
+    this.minimapSvg.addEventListener('click', (event) => {
+      const target = (event.target as HTMLElement).closest<Element>('[data-station-id]');
+      if (target) {
+        const stId = target.getAttribute('data-station-id');
+        if (stId) this.setWaypoint(stId);
+        return;
+      }
+      const hub = (event.target as HTMLElement).closest<Element>('[data-hub]');
+      if (hub) this.travel('hub');
+    });
+    this.minimapSvg.addEventListener('dblclick', (event) => {
+      const target = (event.target as HTMLElement).closest<Element>('[data-station-id]');
+      if (target) {
+        const stId = target.getAttribute('data-station-id');
+        if (stId) this.travel(stId);
+      }
+    });
+    this.root.querySelectorAll('[data-guide-close]').forEach((btn) =>
+      btn.addEventListener('click', () => this.closeGuide()),
+    );
+    this.guideOverlay.addEventListener('click', (event) => {
+      if (event.target === this.guideOverlay) this.closeGuide();
+    });
+    this.root.querySelectorAll<HTMLElement>('[data-ui-hint]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const hint = btn.dataset.uiHint;
+        if (hint === 'atlas') this.callbacks.onOpenMap();
+        else if (hint === 'model') this.callbacks.onToggleBlenderModel?.();
+        else if (hint === 'pioneers') this.openPioneers();
+        else if (hint === 'guide') this.openGuide();
+      });
+    });
     this.root.querySelector('#daynight-chip')?.addEventListener('click', () => this.callbacks.onToggleDayNight?.());
     this.root.querySelector('#pioneers-chip')?.addEventListener('click', () => this.openPioneers());
     this.root.querySelector('#model-chip')?.addEventListener('click', () => this.callbacks.onToggleBlenderModel?.());
@@ -1007,6 +1154,7 @@ export class GameUI {
     this.stations = stations;
     this.renderBadgeSegments();
     this.updateBadgeProgress();
+    this.renderMinimap();
   }
 
   private renderBadgeSegments(): void {
@@ -1047,9 +1195,18 @@ export class GameUI {
     this.renderBadgeSegments();
     this.updateBadgeProgress();
     if (this.mapOpen) this.renderMap();
+    this.renderMinimap();
+    if (this.guideOpen) this.renderGuide();
   }
 
   setFieldCard(data: { title: string; distance: number; meta: string; accent: string } | null): void {
+    if (data) {
+      this.nearestStation = this.stations.find((s) => data.title.includes(s.number)) ?? null;
+    } else {
+      this.nearestStation = null;
+    }
+    this.updateMinimap(this.playerPosition.x, this.playerPosition.z, this.playerPosition.yaw);
+
     const card = this.root.querySelector<HTMLElement>('#field-card');
     const name = this.root.querySelector<HTMLElement>('#field-name');
     const distance = this.root.querySelector<HTMLElement>('#field-distance');
@@ -1242,9 +1399,11 @@ export class GameUI {
   openStation(station: Station, tab: StationTab = 'observe'): void {
     this.activeStation = station;
     this.stationOpen = true;
+    this.stationMinimized = false;
     this.currentTab = tab;
     this.lastMetricKey = '';
     this.lastCueIndex = -2;
+    this.stationPanel.classList.remove('minimized');
     this.stationPanel.classList.add('open');
     this.stationPanel.setAttribute('aria-hidden', 'false');
     document.body.classList.add('station-open');
@@ -1256,7 +1415,8 @@ export class GameUI {
   closeStation(): void {
     if (!this.stationOpen) return;
     this.stationOpen = false;
-    this.stationPanel.classList.remove('open');
+    this.stationMinimized = false;
+    this.stationPanel.classList.remove('open', 'minimized');
     this.stationPanel.setAttribute('aria-hidden', 'true');
     document.body.classList.remove('station-open');
     const station = this.activeStation;
@@ -1264,6 +1424,26 @@ export class GameUI {
     this.syncBodyClasses();
     void station;
     this.callbacks.onCloseStation();
+  }
+
+  toggleStationMinimize(): void {
+    if (!this.stationOpen) return;
+    this.setStationMinimized(!this.stationMinimized);
+  }
+
+  setStationMinimized(minimized: boolean): void {
+    if (!this.stationOpen) return;
+    this.stationMinimized = minimized;
+    this.stationPanel.classList.toggle('minimized', minimized);
+    const minimizeBtn = this.stationPanel.querySelector('#station-minimize-toggle');
+    if (minimizeBtn) {
+      minimizeBtn.setAttribute('title', minimized ? 'Expand experiment info (Tab)' : 'Minimize experiment info (Tab)');
+    }
+    this.callbacks.onStationMinimizeChange?.(minimized);
+  }
+
+  get isStationMinimized(): boolean {
+    return this.stationMinimized;
   }
 
   get isStationOpen(): boolean {
@@ -1295,15 +1475,44 @@ export class GameUI {
       : `<div class="empty-note">No scripted cues. Explore freely.</div>`;
     const solved = station.solved || station.experiment.solved;
     const content = `
+      <div class="station-minimized-bar" id="station-minimized-bar">
+        <div class="mini-info">
+          <span class="station-index" style="--accent:${meta.accent}">${meta.number}</span>
+          <span class="mini-title">${esc(meta.shortTitle || meta.title)}</span>
+          <span class="mini-tab-badge" id="mini-tab-badge">${this.currentTab.toUpperCase()}</span>
+        </div>
+        <div class="mini-actions">
+          <button class="btn tiny ghost" id="mini-restart" title="Reset apparatus">${ICONS.rewind}<span>RESET</span></button>
+          <button class="btn tiny primary" id="mini-primary" title="Trigger primary action" hidden><span>RUN</span></button>
+          <button class="btn tiny ghost expand-btn" id="station-expand-btn" data-expand-station title="Expand experiment info (Tab)">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2">
+              <polyline points="15 3 21 3 21 9"></polyline>
+              <polyline points="9 21 3 21 3 15"></polyline>
+              <line x1="21" y1="3" x2="14" y2="10"></line>
+              <line x1="3" y1="21" x2="10" y2="14"></line>
+            </svg>
+            <span>EXPAND</span>
+            <kbd>Tab</kbd>
+          </button>
+          <button class="icon-close tiny" data-close-station title="Close apparatus (Esc)">${ICONS.close}</button>
+        </div>
+      </div>
       <div class="station-head">
         <div class="station-overline"><span class="station-index" style="--accent:${meta.accent}">${meta.number}</span><span>${esc(
           station.biome.name,
         )}</span><span class="station-status ${solved ? 'solved' : ''}" id="station-solved-flag">${solved ? 'BADGE CLAIMED' : 'UNSEALED'}</span></div>
-        <button class="icon-close" data-close-station title="Close apparatus (Esc)">${ICONS.close}</button>
+        <div class="station-head-actions">
+          <button class="icon-btn icon-minimize" id="station-minimize-toggle" data-minimize-station title="Minimize experiment info (Tab)">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
+              <line x1="5" y1="12" x2="19" y2="12"></line>
+            </svg>
+          </button>
+          <button class="icon-close" data-close-station title="Close apparatus (Esc)">${ICONS.close}</button>
+        </div>
         <h2>${esc(meta.title)}</h2>
         <p class="station-subtitle">${esc(meta.subtitle)}</p>
         <div class="station-concept">${esc(meta.concept)}</div>
-        <p class="station-orbit-hint">Drag the field to orbit · scroll to adjust framing · E or Esc returns</p>
+        <p class="station-orbit-hint">Drag the field to orbit · scroll to adjust framing · Tab minimizes · E or Esc returns</p>
       </div>
       <div class="station-tabs" role="tablist">
         <button data-station-tab="observe" role="tab"><span>01</span>OBSERVE</button>
@@ -1313,21 +1522,68 @@ export class GameUI {
       </div>
       <div class="station-body">
         <section data-pane="observe" class="station-pane">
-          <p class="pane-lede">${esc(meta.description)}</p>
-          <div class="spec-card">
-            <span class="card-kicker">THE PHYSICS</span>
-            <code>${esc(meta.formula)}</code>
-            <p>${esc(meta.formulaNote)}</p>
-          </div>
-          <div class="spec-card warm">
-            <span class="card-kicker">WHERE IT LIVES IN THE WORLD</span>
-            <p>${esc(meta.realWorld)}</p>
-          </div>
-          <div class="observation-launch">
-            <div><span class="card-kicker">GUIDED OBSERVATION</span><p>A scripted demonstration walks through the key behaviour, cue by cue.</p></div>
-            <button class="btn primary" id="observe-button">${ICONS.play}<span>RUN OBSERVATION</span></button>
-          </div>
-          <div class="cue-wrap"><span class="card-kicker">OBSERVATION CUES</span>${cues}</div>
+          ${(() => {
+            const spotlight = getExperimentSpotlight(meta.id);
+            const p = spotlight.pioneer;
+            return `
+              ${
+                p
+                  ? `
+              <div class="pioneer-spotlight-card">
+                <div class="pioneer-avatar-frame">
+                  <img src="${p.portrait}" alt="${esc(p.name)}" class="pioneer-avatar" onerror="this.src='/portraits/galileo_raw.jpg'" />
+                  <span class="pioneer-year-tag">${esc(p.year)}</span>
+                </div>
+                <div class="pioneer-info">
+                  <div class="pioneer-kicker">
+                    <span class="kicker-tag">HISTORICAL PIONEER</span>
+                    <span class="kicker-year">${esc(p.year)}</span>
+                  </div>
+                  <h3 class="pioneer-name">${esc(p.name)} <small>${esc(p.lifespan)}</small></h3>
+                  <p class="pioneer-discovery">${esc(p.discovery)}</p>
+                  <p class="pioneer-significance">“${esc(p.significance)}”</p>
+                  <button class="pioneer-hall-btn" data-open-pioneer="${esc(p.id)}">
+                    <span>HALL OF PIONEERS</span>
+                    <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"></polyline></svg>
+                  </button>
+                </div>
+              </div>`
+                  : ''
+              }
+
+              <div class="simple-overview-card">
+                <div class="overview-item goal">
+                  <div class="overview-head"><span class="overview-icon">🎯</span><b>WHAT THIS EXPERIMENT TESTS</b></div>
+                  <p>${esc(spotlight.whatIsIt)}</p>
+                </div>
+                <div class="overview-item watch">
+                  <div class="overview-head"><span class="overview-icon">👁️</span><b>WHAT TO WATCH FOR</b></div>
+                  <p>${esc(spotlight.whatToWatch)}</p>
+                </div>
+                <div class="overview-item takeaway">
+                  <div class="overview-head"><span class="overview-icon">⚡</span><b>KEY PRINCIPLE</b></div>
+                  <p>${esc(spotlight.keyTakeaway)}</p>
+                </div>
+              </div>
+
+              <div class="spec-card">
+                <span class="card-kicker">THE MATHEMATICS</span>
+                <code>${esc(meta.formula)}</code>
+                <p>${esc(meta.formulaNote)}</p>
+              </div>
+
+              <div class="spec-card warm">
+                <span class="card-kicker">WHERE IT LIVES IN THE MODERN WORLD</span>
+                <p>${esc(meta.realWorld)}</p>
+              </div>
+
+              <div class="observation-launch">
+                <div><span class="card-kicker">GUIDED OBSERVATION</span><p>A step-by-step demonstration walks through key phenomena cue-by-cue.</p></div>
+                <button class="btn primary" id="observe-button">${ICONS.play}<span>RUN OBSERVATION</span></button>
+              </div>
+              <div class="cue-wrap"><span class="card-kicker">OBSERVATION CUES</span>${cues}</div>
+            `;
+          })()}
         </section>
         <section data-pane="tinker" class="station-pane">
           <div class="pane-head"><div><span class="card-kicker">VARIABLES</span><h3>Turn the apparatus</h3></div><button class="btn tiny ghost" id="station-restart-top">${ICONS.rewind}<span>RESTART</span></button></div>
@@ -1487,7 +1743,23 @@ export class GameUI {
   }
 
   private bindStationEvents(): void {
-    this.stationPanel.querySelector('[data-close-station]')?.addEventListener('click', () => this.closeStation());
+    this.stationPanel.querySelectorAll<HTMLElement>('[data-close-station]').forEach((button) => {
+      button.addEventListener('click', () => this.closeStation());
+    });
+    this.stationPanel.querySelector('#station-minimize-toggle')?.addEventListener('click', () => {
+      this.toggleStationMinimize();
+    });
+    this.stationPanel.querySelector('#station-expand-btn')?.addEventListener('click', () => {
+      this.setStationMinimized(false);
+    });
+    this.stationPanel.querySelector('#mini-restart')?.addEventListener('click', () => this.callbacks.onRestart());
+    this.stationPanel.querySelector('#mini-primary')?.addEventListener('click', () => this.callbacks.onPrimary());
+    this.stationPanel.querySelectorAll<HTMLElement>('[data-open-pioneer]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const id = btn.dataset.openPioneer;
+        this.openPioneers(id);
+      });
+    });
     this.stationPanel.querySelectorAll<HTMLElement>('[data-station-tab]').forEach((button) => {
       button.addEventListener('click', () => this.setTab(button.dataset.stationTab as StationTab, true));
     });
@@ -1553,6 +1825,8 @@ export class GameUI {
     this.stationPanel.querySelectorAll<HTMLElement>('[data-pane]').forEach((pane) => {
       pane.classList.toggle('active', pane.dataset.pane === tab);
     });
+    const miniBadge = this.stationPanel.querySelector('#mini-tab-badge');
+    if (miniBadge) miniBadge.textContent = tab.toUpperCase();
     if (notify) this.callbacks.onTabChange(tab);
   }
 
@@ -1599,6 +1873,13 @@ export class GameUI {
       if (live.primaryLabel) primary.innerHTML = `<span>${esc(live.primaryLabel)}</span>${ICONS.arrow}`;
       primary.disabled = !live.primaryEnabled;
       primary.classList.toggle('running', !live.primaryEnabled && Boolean(live.primaryLabel));
+    }
+    const miniPrimary = this.stationPanel.querySelector<HTMLButtonElement>('#mini-primary');
+    if (miniPrimary) {
+      miniPrimary.hidden = !live.primaryLabel;
+      if (live.primaryLabel) miniPrimary.innerHTML = `<span>${esc(live.primaryLabel)}</span>`;
+      miniPrimary.disabled = !live.primaryEnabled;
+      miniPrimary.classList.toggle('running', !live.primaryEnabled && Boolean(live.primaryLabel));
     }
     const hint = this.stationPanel.querySelector('#primary-hint');
     if (hint) hint.textContent = live.primaryHint;
@@ -1679,6 +1960,8 @@ export class GameUI {
   setPlayerPose(x: number, z: number, yaw: number): void {
     this.playerPosition = { x, z, yaw };
     this.updateMapPlayer(x, z, yaw);
+    this.updateMinimap(x, z, yaw);
+    this.updateCompass(yaw);
   }
 
   openMap(): void {
@@ -1795,6 +2078,317 @@ export class GameUI {
     if (!this.mapPlayer) return;
     this.mapPlayer.setAttribute('transform', `translate(${x.toFixed(2)} ${z.toFixed(2)})`);
     if (this.mapPlayerHead) this.mapPlayerHead.setAttribute('transform', `rotate(${(-yaw * 180) / Math.PI})`);
+  }
+
+  setWaypoint(stationId: string): void {
+    if (this.selectedWaypointId === stationId) {
+      this.selectedWaypointId = null;
+      this.toast('Waypoint Cleared', 'Now tracking nearest station.', '#7ef9ff', '⌖', 2200);
+    } else {
+      this.selectedWaypointId = stationId;
+      const st = this.stations.find((s) => s.id === stationId);
+      if (st) {
+        this.toast('Waypoint Locked', `Targeting ${st.number} · ${st.shortTitle}. Click WARP on minimap to jump directly.`, st.accent, '🎯', 3200);
+      }
+    }
+    this.root.querySelectorAll('.mm-station').forEach((el) => {
+      el.classList.toggle('targeted', el.getAttribute('data-station-id') === this.selectedWaypointId);
+    });
+    this.updateMinimap(this.playerPosition.x, this.playerPosition.z, this.playerPosition.yaw);
+  }
+
+  private renderMinimap(): void {
+    if (!this.minimapSvg) return;
+
+    const pathMarkup = BIOMES.map((biome) => {
+      const points = biomePathPoints(biome, 12);
+      const d = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x.toFixed(1)} ${p.z.toFixed(1)}`).join(' ');
+      return `<path d="${d}" class="mm-path" style="stroke:${biome.accent}"/>`;
+    }).join('');
+
+    const biomeMarkup = BIOMES.map((biome) => {
+      return `
+        <g class="mm-biome" transform="translate(${biome.center.x} ${biome.center.y})">
+          <circle r="22" fill="${biome.accent}" opacity="0.10"/>
+          <circle r="15" fill="none" stroke="${biome.accent}" stroke-width="0.7" opacity="0.32"/>
+          <text class="mm-biome-label" y="-17" fill="${biome.accent}">0${biome.index} · ${esc(biome.shortName.toUpperCase())}</text>
+        </g>
+      `;
+    }).join('');
+
+    const stationMarkup = this.stations
+      .map(
+        (st) => `
+        <g class="mm-station ${st.solved ? 'solved' : ''} ${st.id === this.selectedWaypointId ? 'targeted' : ''}"
+           data-station-id="${st.id}"
+           transform="translate(${st.x.toFixed(1)} ${st.z.toFixed(1)})"
+           tabindex="0" role="button" aria-label="${esc(`${st.number} ${st.shortTitle}`)}"
+           style="--accent:${st.accent}">
+          <title>${esc(`${st.number} · ${st.shortTitle} (${st.solved ? 'Claimed' : 'Unsealed'})`)}</title>
+          <circle r="9.5" class="mm-station-halo"/>
+          <circle r="5.6" class="mm-station-dot"/>
+          <text y="2.2" class="mm-station-num">${esc(st.number)}</text>
+        </g>`,
+      )
+      .join('');
+
+    this.minimapSvg.innerHTML = `
+      <defs>
+        <radialGradient id="mm-island-grad" cx="50%" cy="50%" r="50%">
+          <stop offset="0%" stop-color="#142832" stop-opacity="0.95"/>
+          <stop offset="75%" stop-color="#0a1720" stop-opacity="0.98"/>
+          <stop offset="100%" stop-color="#050c12" stop-opacity="1"/>
+        </radialGradient>
+      </defs>
+      <!-- Island boundary -->
+      <circle r="116" fill="url(#mm-island-grad)" stroke="rgba(246, 207, 133, 0.45)" stroke-width="0.8"/>
+      <circle r="116" fill="none" stroke="rgba(126, 249, 255, 0.15)" stroke-width="0.4" stroke-dasharray="1.5 3"/>
+      <!-- Concentric distance rings -->
+      <circle r="25" fill="rgba(246, 207, 133, 0.04)" stroke="rgba(246, 207, 133, 0.3)" stroke-width="0.5"/>
+      <circle r="55" fill="none" stroke="rgba(126, 249, 255, 0.1)" stroke-width="0.4" stroke-dasharray="1 3"/>
+      <circle r="85" fill="none" stroke="rgba(126, 249, 255, 0.12)" stroke-width="0.4" stroke-dasharray="1 3"/>
+      <!-- Grid cross -->
+      <line x1="-116" y1="0" x2="116" y2="0" stroke="rgba(126, 249, 255, 0.08)" stroke-width="0.5"/>
+      <line x1="0" y1="-116" x2="0" y2="116" stroke="rgba(126, 249, 255, 0.08)" stroke-width="0.5"/>
+      ${pathMarkup}
+      ${biomeMarkup}
+      <!-- Central Hub -->
+      <g class="mm-hub" data-hub tabindex="0" role="button" aria-label="Spawn Rotunda">
+        <circle r="8" fill="rgba(244, 207, 134, 0.2)" stroke="#f4cf86" stroke-width="0.8"/>
+        <circle r="2.5" fill="#f4cf86"/>
+        <text y="2" class="mm-hub-label">HUB</text>
+      </g>
+      <!-- Waypoint line -->
+      <line id="mm-waypoint-line" class="mm-waypoint-line" x1="0" y1="0" x2="0" y2="0"/>
+      <!-- Stations -->
+      ${stationMarkup}
+      <!-- Live Player Marker -->
+      <g id="mm-player" class="mm-player" transform="translate(0 14)">
+        <path id="mm-player-cone" d="M0 0 L-18 -42 A46 46 0 0 1 18 -42 Z" class="mm-vision-cone"/>
+        <circle r="4.2" class="mm-player-ring"/>
+        <circle r="1.8" class="mm-player-dot"/>
+        <path id="mm-player-head" d="M0 -9 L4 3 L0 1.2 L-4 3 Z" class="mm-player-head"/>
+      </g>
+      <!-- North Indicator -->
+      <text x="0" y="-106" class="mm-north">N</text>
+      <path d="M0 -101 l-2 -3.5 h4 Z" fill="#7ef9ff"/>
+    `;
+
+    this.minimapPlayer = this.minimapSvg.querySelector<SVGGElement>('#mm-player');
+    this.minimapPlayerHead = this.minimapSvg.querySelector<SVGPathElement>('#mm-player-head');
+    this.minimapPlayerCone = this.minimapSvg.querySelector<SVGPathElement>('#mm-player-cone');
+    this.minimapWaypointLine = this.minimapSvg.querySelector<SVGLineElement>('#mm-waypoint-line');
+  }
+
+  private updateMinimap(x: number, z: number, yaw: number): void {
+    if (!this.minimapPlayer) return;
+
+    this.minimapPlayer.setAttribute('transform', `translate(${x.toFixed(2)} ${z.toFixed(2)})`);
+    const angleDeg = (-yaw * 180) / Math.PI;
+    if (this.minimapPlayerHead) {
+      this.minimapPlayerHead.setAttribute('transform', `rotate(${angleDeg.toFixed(1)})`);
+    }
+    if (this.minimapPlayerCone) {
+      this.minimapPlayerCone.setAttribute('transform', `rotate(${angleDeg.toFixed(1)})`);
+    }
+
+    const coords = this.root.querySelector('#minimap-coords');
+    if (coords) {
+      const signX = x >= 0 ? '+' : '';
+      const signZ = z >= 0 ? '+' : '';
+      coords.textContent = `X ${signX}${x.toFixed(0)} · Z ${signZ}${z.toFixed(0)}`;
+    }
+
+    if (this.minimapZoom === 2.5) {
+      const r = 48;
+      this.minimapSvg.setAttribute('viewBox', `${(x - r).toFixed(1)} ${(z - r).toFixed(1)} ${2 * r} ${2 * r}`);
+    } else {
+      this.minimapSvg.setAttribute('viewBox', '-124 -124 248 248');
+    }
+
+    const targetStation = this.selectedWaypointId
+      ? this.stations.find((s) => s.id === this.selectedWaypointId) ?? this.nearestStation
+      : this.nearestStation;
+
+    if (targetStation) {
+      if (this.minimapWaypointLine) {
+        this.minimapWaypointLine.setAttribute('x1', x.toFixed(1));
+        this.minimapWaypointLine.setAttribute('y1', z.toFixed(1));
+        this.minimapWaypointLine.setAttribute('x2', targetStation.x.toFixed(1));
+        this.minimapWaypointLine.setAttribute('y2', targetStation.z.toFixed(1));
+        this.minimapWaypointLine.style.stroke = targetStation.accent;
+        this.minimapWaypointLine.style.display = 'block';
+      }
+
+      const dx = targetStation.x - x;
+      const dz = targetStation.z - z;
+      const dist = Math.hypot(dx, dz);
+
+      const worldBearing = Math.atan2(dx, -dz);
+      let relBearing = worldBearing - yaw;
+      while (relBearing > Math.PI) relBearing -= Math.PI * 2;
+      while (relBearing < -Math.PI) relBearing += Math.PI * 2;
+      const relDeg = (relBearing * 180) / Math.PI;
+
+      const arrow = this.root.querySelector<HTMLElement>('#minimap-bearing-arrow');
+      if (arrow) {
+        arrow.style.transform = `rotate(${relDeg.toFixed(0)}deg)`;
+        arrow.style.color = targetStation.accent;
+      }
+
+      const nameEl = this.root.querySelector('#minimap-target-name');
+      if (nameEl) nameEl.textContent = `${targetStation.number} · ${targetStation.shortTitle}`;
+      const distEl = this.root.querySelector('#minimap-target-dist');
+      if (distEl) distEl.textContent = `${dist.toFixed(0)} m`;
+      const metaEl = this.root.querySelector('#minimap-target-label');
+      if (metaEl) {
+        metaEl.textContent = this.selectedWaypointId ? 'TRACKED WAYPOINT' : 'NEAREST EXPERIMENT';
+      }
+      const banner = this.root.querySelector<HTMLElement>('#minimap-target-bar');
+      if (banner) banner.style.setProperty('--accent', targetStation.accent);
+    } else {
+      if (this.minimapWaypointLine) this.minimapWaypointLine.style.display = 'none';
+      const nameEl = this.root.querySelector('#minimap-target-name');
+      if (nameEl) nameEl.textContent = 'Scanning island…';
+      const distEl = this.root.querySelector('#minimap-target-dist');
+      if (distEl) distEl.textContent = '-- m';
+    }
+  }
+
+  private updateCompass(yaw: number): void {
+    if (!this.compassBearingLabel) return;
+
+    let headingDeg = Math.round((-yaw * 180) / Math.PI) % 360;
+    if (headingDeg < 0) headingDeg += 360;
+
+    const cardinals = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+    const cardIdx = Math.round(headingDeg / 45) % 8;
+    this.compassBearingLabel.textContent = `${headingDeg.toString().padStart(3, '0')}° ${cardinals[cardIdx]}`;
+
+    if (this.compassPins && this.stations.length > 0) {
+      const px = this.playerPosition.x;
+      const pz = this.playerPosition.z;
+      const fovRad = Math.PI * 0.38;
+
+      let pinsHtml = '';
+      for (const st of this.stations) {
+        const dx = st.x - px;
+        const dz = st.z - pz;
+        const dist = Math.hypot(dx, dz);
+        if (dist < 3) continue;
+
+        const worldAngle = Math.atan2(dx, -dz);
+        let diff = worldAngle - yaw;
+        while (diff > Math.PI) diff -= Math.PI * 2;
+        while (diff < -Math.PI) diff += Math.PI * 2;
+
+        if (Math.abs(diff) < fovRad) {
+          const pct = 50 + (diff / fovRad) * 46;
+          pinsHtml += `
+            <div class="compass-pin ${st.id === this.selectedWaypointId ? 'targeted' : ''}"
+                 style="left:${pct.toFixed(1)}%; --c:${st.accent}"
+                 title="${esc(`${st.number} · ${st.shortTitle} (${dist.toFixed(0)}m)`)}"
+                 data-compass-st="${st.id}">
+              <span class="compass-pin-dot"></span>
+              <span class="compass-pin-num">${esc(st.number)}</span>
+            </div>
+          `;
+        }
+      }
+      this.compassPins.innerHTML = pinsHtml;
+    }
+  }
+
+  openGuide(): void {
+    this.closeTopOverlay();
+    this.guideOverlay.hidden = false;
+    this.guideOpen = true;
+    this.renderGuide();
+    this.syncBodyClasses();
+  }
+
+  closeGuide(): void {
+    if (!this.guideOpen) return;
+    this.guideOpen = false;
+    this.guideOverlay.hidden = true;
+    this.syncBodyClasses();
+    this.callbacks.onHelpClose?.();
+  }
+
+  get isGuideOpen(): boolean {
+    return this.guideOpen;
+  }
+
+  private renderGuide(): void {
+    const grid = this.root.querySelector('#guide-grid');
+    if (!grid) return;
+
+    grid.innerHTML = BIOMES.map((biome) => {
+      const biomeStations = this.stations.filter((s) => s.biomeId === biome.id);
+      const solvedCount = biomeStations.filter((s) => s.solved).length;
+      return `
+        <div class="guide-realm-card" style="--biome:${biome.accent}">
+          <div class="guide-realm-head">
+            <div class="realm-title-group">
+              <span class="realm-badge">REALM 0${biome.index}</span>
+              <h3 class="realm-name">${esc(biome.name)}</h3>
+              <span class="realm-discipline">${esc(biome.discipline)} · Mentors: ${esc(biome.mentors)}</span>
+            </div>
+            <span class="realm-progress-badge">${solvedCount} / ${biomeStations.length} DISCOVERIES</span>
+          </div>
+          <div class="guide-station-list">
+            ${biomeStations
+              .map((st) => {
+                const spotlight = getExperimentSpotlight(st.id);
+                const isTarget = st.id === this.selectedWaypointId;
+                return `
+                  <div class="guide-station-item ${st.solved ? 'solved' : ''}">
+                    <div class="station-meta-col">
+                      <span class="st-num" style="color:${st.accent}">${esc(st.number)}</span>
+                      <div class="st-texts">
+                        <b>${esc(st.shortTitle)}</b>
+                        <p>${esc(spotlight.whatIsIt)}</p>
+                      </div>
+                    </div>
+                    <div class="station-actions-col">
+                      <span class="st-status-tag ${st.solved ? 'claimed' : 'open'}">
+                        ${st.solved ? '★ SEALED' : 'UNSEALED'}
+                      </span>
+                      <button class="guide-btn guide-btn-track ${isTarget ? 'active' : ''}" data-guide-track="${st.id}" title="Track on Radar">
+                        ${isTarget ? 'TRACKING' : 'TRACK'}
+                      </button>
+                      <button class="guide-btn guide-btn-warp" data-guide-warp="${st.id}" title="Warp directly to apparatus">
+                        WARP
+                      </button>
+                    </div>
+                  </div>
+                `;
+              })
+              .join('')}
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    grid.querySelectorAll<HTMLButtonElement>('[data-guide-warp]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const stId = btn.dataset.guideWarp;
+        if (stId) {
+          this.closeGuide();
+          this.travel(stId);
+        }
+      });
+    });
+
+    grid.querySelectorAll<HTMLButtonElement>('[data-guide-track]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const stId = btn.dataset.guideTrack;
+        if (stId) {
+          this.setWaypoint(stId);
+          this.renderGuide();
+        }
+      });
+    });
   }
 
   closeMap(): void {
@@ -2153,6 +2747,10 @@ export class GameUI {
   // ---------------------------------------------------------------------------
 
   closeTopOverlay(): boolean {
+    if (this.guideOpen) {
+      this.closeGuide();
+      return true;
+    }
     if (this.pioneersOpen) {
       this.closePioneers();
       return true;
@@ -2188,17 +2786,40 @@ export class GameUI {
       this.badgeOpen ||
       this.stationOpen ||
       this.inventoryOpen ||
-      this.pioneersOpen
+      this.pioneersOpen ||
+      this.guideOpen
     );
   }
 
-  openPioneers(): void {
-    if (this.pioneersOpen) return;
+  openPioneers(pioneerId?: string): void {
+    if (this.pioneersOpen) {
+      if (pioneerId) this.scrollToPioneer(pioneerId);
+      return;
+    }
     this.closeTopOverlay();
     this.pioneersOverlay.hidden = false;
     this.pioneersOpen = true;
+    if (pioneerId) {
+      this.pioneersCategory = 'all';
+    }
     this.renderPioneers();
     this.syncBodyClasses();
+    if (pioneerId) {
+      setTimeout(() => this.scrollToPioneer(pioneerId), 80);
+    }
+  }
+
+  private scrollToPioneer(pioneerId: string): void {
+    const card = this.root.querySelector<HTMLElement>(`[data-pioneer="${pioneerId}"]`);
+    if (card) {
+      card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      card.style.outline = '2px solid var(--accent, #f4cf86)';
+      card.style.boxShadow = '0 0 30px var(--accent, #f4cf86)';
+      setTimeout(() => {
+        card.style.outline = '';
+        card.style.boxShadow = '';
+      }, 2500);
+    }
   }
 
   closePioneers(): void {
@@ -2216,11 +2837,12 @@ export class GameUI {
     this.blenderModelActive = active;
     const label = this.root.querySelector('#model-toggle-label');
     if (label) {
-      label.textContent = active ? 'BLENDER 3D: ON' : 'BLENDER 3D: OFF';
+      label.textContent = active ? 'BLENDER 3D' : 'VOXEL MODE';
     }
-    const btn = this.root.querySelector('#model-chip');
+    const btn = this.root.querySelector<HTMLElement>('#model-chip');
     if (btn) {
       btn.classList.toggle('active', active);
+      btn.setAttribute('title', active ? 'Toggle Voxel mode (B)' : 'Toggle Blender 3D view (B)');
     }
   }
 
@@ -2310,7 +2932,8 @@ export class GameUI {
       this.helpOpen ||
       this.badgeOpen ||
       this.inventoryOpen ||
-      this.pioneersOpen;
+      this.pioneersOpen ||
+      this.guideOpen;
     document.body.classList.toggle('overlay-open', anyOverlay);
   }
 

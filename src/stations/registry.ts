@@ -84,6 +84,26 @@ function makeStationLabel(station: Pick<Station, 'experiment' | 'solved'>): THRE
  * coordinates with its "front" toward +Z, then rotated to face the Hall of
  * Constants so the player always approaches the readable side.
  */
+const STATION_COLLIDER_CONFIGS: Record<string, { size: [number, number, number]; offsetY: number }> = {
+  'photoelectric': { size: [11.0, 3.8, 5.5], offsetY: 1.8 },
+  'double-slit': { size: [7.5, 3.2, 5.0], offsetY: 1.5 },
+  'vacuum-drop': { size: [4.2, 9.5, 4.2], offsetY: 4.6 },
+  'pendulum': { size: [4.8, 7.5, 4.8], offsetY: 3.5 },
+  'collision': { size: [8.5, 2.8, 4.0], offsetY: 1.4 },
+  'bernoulli': { size: [8.5, 2.8, 4.0], offsetY: 1.4 },
+  'spacetime': { size: [7.0, 3.0, 7.0], offsetY: 1.5 },
+  'twin-paradox': { size: [7.0, 3.0, 7.0], offsetY: 1.5 },
+  'projectile': { size: [6.0, 3.0, 4.5], offsetY: 1.4 },
+  'buoyancy': { size: [5.0, 3.2, 5.0], offsetY: 1.5 },
+  'gas-piston': { size: [4.8, 4.5, 4.8], offsetY: 2.0 },
+  'ohm': { size: [5.2, 2.8, 4.5], offsetY: 1.4 },
+  'faraday': { size: [5.5, 3.0, 5.0], offsetY: 1.4 },
+  'lorentz': { size: [6.0, 3.2, 5.0], offsetY: 1.5 },
+  'snell': { size: [5.2, 2.8, 4.5], offsetY: 1.4 },
+  'doppler': { size: [6.5, 3.0, 4.5], offsetY: 1.4 },
+  'standing-wave': { size: [7.5, 3.0, 4.0], offsetY: 1.4 },
+};
+
 export class StationRegistry {
   readonly group = new THREE.Group();
   readonly stations: Station[] = [];
@@ -163,6 +183,16 @@ export class StationRegistry {
       };
       this.stations.push(station);
       this.byId.set(station.id, station);
+    }
+  }
+
+  addCollidersToWorld(world: { addCollider(center: THREE.Vector3, size: THREE.Vector3): THREE.Box3 }): void {
+    for (const station of this.stations) {
+      const cfg = STATION_COLLIDER_CONFIGS[station.id] ?? { size: [4.6, 3.2, 4.6], offsetY: 1.5 };
+      world.addCollider(
+        new THREE.Vector3(station.worldPosition.x, cfg.offsetY, station.worldPosition.z),
+        new THREE.Vector3(cfg.size[0], cfg.size[1], cfg.size[2]),
+      );
     }
   }
 

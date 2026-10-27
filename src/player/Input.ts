@@ -19,6 +19,8 @@ export type InputAction =
   | 'inventory'
   | 'daynight'
   | 'pioneers'
+  | 'blender'
+  | 'toggleMinimize'
   | 'escape';
 
 type ActionListener = (action: InputAction) => void;
@@ -42,7 +44,7 @@ export class Input {
     h: 'help',
     v: 'goggles',
     t: 'time',
-    b: 'builder',
+    b: 'blender',
     i: 'inventory',
     k: 'book',
     g: 'graph',
@@ -57,6 +59,8 @@ export class Input {
     '6': 'slot6',
     l: 'pioneers',
     n: 'daynight',
+    tab: 'toggleMinimize',
+    Tab: 'toggleMinimize',
     Escape: 'escape',
   };
 
@@ -125,7 +129,7 @@ export class Input {
   }
 
   private onKeyDown = (event: KeyboardEvent): void => {
-    if (event.code === 'Space') event.preventDefault();
+    if (event.code === 'Space' || event.code === 'Tab') event.preventDefault();
     if (event.repeat) {
       this.keydownListeners.forEach((listener) => listener(event));
       return;

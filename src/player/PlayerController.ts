@@ -149,6 +149,8 @@ export class PlayerController {
     this.tryMoveAxis('z', desired.z);
     this.tryMoveAxis('y', desired.y);
 
+    this.resolveDepenetration();
+
     if (this.position.y <= 0) {
       const impactVelocity = Math.abs(this.velocity.y);
       if (!this.lastGrounded && impactVelocity > 1.0) {
@@ -238,6 +240,23 @@ export class PlayerController {
     }
 
     if (this.collides()) {
+      // Step-assist: Allow stepping up over small curbs/stairs up to 0.38m high
+      if ((axis === 'x' || axis === 'z') && this.grounded) {
+        const originalY = this.position.y;
+        let stepped = false;
+        for (const step of [0.15, 0.28, 0.38]) {
+          this.position.y = originalY + step;
+          if (!this.collides()) {
+            stepped = true;
+            break;
+          }
+        }
+        if (stepped) {
+          return;
+        }
+        this.position.y = originalY;
+      }
+
       this.position[axis] = previous;
       if (axis === 'y') {
         if (this.velocity.y <= 0) {
@@ -279,6 +298,42 @@ export class PlayerController {
       }
     }
     return false;
+  }
+
+  private resolveDepenetration(): void {
+    const minX = this.position.x - PLAYER_RADIUS;
+    const maxX = this.position.x + PLAYER_RADIUS;
+    const minZ = this.position.z - PLAYER_RADIUS;
+    const maxZ = this.position.z + PLAYER_RADIUS;
+    const minY = this.position.y + 0.05;
+    const maxY = this.position.y + PLAYER_HEIGHT;
+
+    for (const collider of this.colliders) {
+      if (
+        maxX > collider.min.x &&
+        minX < collider.max.x &&
+        maxY > collider.min.y &&
+        minY < collider.max.y &&
+        maxZ > collider.min.z &&
+        minZ < collider.max.z
+      ) {
+        const pushLeft = collider.min.x - maxX;
+        const pushRight = collider.max.x - minX;
+        const pushBack = collider.min.z - maxZ;
+        const pushFront = collider.max.z - minZ;
+
+        const pushX = Math.abs(pushLeft) < Math.abs(pushRight) ? pushLeft : pushRight;
+        const pushZ = Math.abs(pushBack) < Math.abs(pushFront) ? pushBack : pushFront;
+
+        if (Math.abs(pushX) < Math.abs(pushZ)) {
+          this.position.x += pushX;
+          this.velocity.x = 0;
+        } else {
+          this.position.z += pushZ;
+          this.velocity.z = 0;
+        }
+      }
+    }
   }
 
   private collides(): boolean {

@@ -151,6 +151,20 @@ export class VoxelBuilder {
       }
       this.placeCoords = new THREE.Vector3(bx + nx, by + ny, bz + nz);
 
+      // Disallow targeting if placement overlaps solid world colliders (apparatus, pillars, trees)
+      if (this.playerCollidersRef) {
+        const testBlockBox = new THREE.Box3(
+          new THREE.Vector3(this.placeCoords.x - 0.49, this.placeCoords.y - 0.49, this.placeCoords.z - 0.49),
+          new THREE.Vector3(this.placeCoords.x + 0.49, this.placeCoords.y + 0.49, this.placeCoords.z + 0.49),
+        );
+        for (const col of this.playerCollidersRef) {
+          if (col.intersectsBox(testBlockBox)) {
+            this.clearTargeting();
+            return;
+          }
+        }
+      }
+
       // Position the selection wireframe box
       this.selectionBox.position.set(bx, by, bz);
       this.selectionBox.visible = true;
@@ -180,16 +194,23 @@ export class VoxelBuilder {
     if (this.placedBlocks.has(key)) return false;
 
     // Prevent placing directly inside the player
+    const blockBox = new THREE.Box3(
+      new THREE.Vector3(x - 0.49, y - 0.49, z - 0.49),
+      new THREE.Vector3(x + 0.49, y + 0.49, z + 0.49),
+    );
     if (playerPosition) {
       const playerBox = new THREE.Box3(
         new THREE.Vector3(playerPosition.x - 0.35, playerPosition.y, playerPosition.z - 0.35),
         new THREE.Vector3(playerPosition.x + 0.35, playerPosition.y + 1.8, playerPosition.z + 0.35),
       );
-      const blockBox = new THREE.Box3(
-        new THREE.Vector3(x - 0.5, y - 0.5, z - 0.5),
-        new THREE.Vector3(x + 0.5, y + 0.5, z + 0.5),
-      );
       if (playerBox.intersectsBox(blockBox)) return false;
+    }
+
+    // Prevent placing directly inside world obstacles & station apparatuses
+    if (this.playerCollidersRef) {
+      for (const col of this.playerCollidersRef) {
+        if (col.intersectsBox(blockBox)) return false;
+      }
     }
 
     const type = this.activeBlockType;
