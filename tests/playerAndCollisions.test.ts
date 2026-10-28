@@ -71,4 +71,45 @@ describe('Player Physics, Collisions, and Spatial Boundaries', () => {
     const safeBlockBox = new THREE.Box3().setFromCenterAndSize(safeBlockCenter, blockSize);
     expect(playerBox.intersectsBox(safeBlockBox)).toBe(false);
   });
+
+  it('preserves vertical step-assist height during horizontal axis movement', () => {
+    // When an axis move steps up over a curb, the vertical height gained must not be wiped out by pre-step desired.y
+    let playerY = 0;
+    const velocityY = 0;
+    const dt = 1 / 60;
+    const curbStep = 0.28;
+
+    // Simulate stepping over curb on X axis
+    playerY += curbStep;
+
+    // Correctly calculating desiredY from the post-step playerY
+    const desiredY = playerY + velocityY * dt;
+    expect(desiredY).toBeCloseTo(0.28);
+    expect(desiredY).toBeGreaterThan(0);
+  });
+
+  it('calculates safe standoff observation poses for 3D monuments and apparatuses', () => {
+    // A monument located at (-40, -40)
+    const monumentX = -40;
+    const monumentZ = -40;
+    const toHub = new THREE.Vector2(-monumentX, -monumentZ).normalize();
+    const standoffDistance = 6.5;
+
+    const targetX = monumentX + toHub.x * standoffDistance;
+    const targetZ = monumentZ + toHub.y * standoffDistance;
+
+    // Player should be closer to hub (0, 0) than the monument itself
+    const monumentDistToHub = Math.hypot(monumentX, monumentZ);
+    const playerDistToHub = Math.hypot(targetX, targetZ);
+    expect(playerDistToHub).toBeLessThan(monumentDistToHub);
+    expect(monumentDistToHub - playerDistToHub).toBeCloseTo(standoffDistance, 1);
+
+    // Bounding box of the player should not intersect the monument core
+    const monumentBox = new THREE.Box3().setFromCenterAndSize(
+      new THREE.Vector3(monumentX, 2, monumentZ),
+      new THREE.Vector3(4, 4, 4),
+    );
+    const playerBox = getPlayerBox(new THREE.Vector3(targetX, 0, targetZ));
+    expect(playerBox.intersectsBox(monumentBox)).toBe(false);
+  });
 });

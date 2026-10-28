@@ -186,10 +186,10 @@ export class StationRegistry {
     }
   }
 
-  addCollidersToWorld(world: { addCollider(center: THREE.Vector3, size: THREE.Vector3): THREE.Box3 }): void {
+  addCollidersToWorld(world: { addStationCollider(center: THREE.Vector3, size: THREE.Vector3): THREE.Box3 }): void {
     for (const station of this.stations) {
       const cfg = STATION_COLLIDER_CONFIGS[station.id] ?? { size: [4.6, 3.2, 4.6], offsetY: 1.5 };
-      world.addCollider(
+      world.addStationCollider(
         new THREE.Vector3(station.worldPosition.x, cfg.offsetY, station.worldPosition.z),
         new THREE.Vector3(cfg.size[0], cfg.size[1], cfg.size[2]),
       );

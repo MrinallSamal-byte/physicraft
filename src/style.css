@@ -467,7 +467,7 @@ kbd {
   position: absolute;
   inset: 0;
   opacity: 0;
-  transition: opacity 0.7s ease 0.2s;
+  transition: opacity 0.3s ease;
   pointer-events: none;
 }
 body.started .hud {
@@ -1724,6 +1724,50 @@ body.station-open .minimap-deck:hover {
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.3);
   backdrop-filter: blur(12px);
   animation: prompt-in 0.35s ease both;
+}
+.seated-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 18px;
+  border: 1px solid rgba(255, 215, 161, 0.35);
+  border-radius: 6px;
+  background: linear-gradient(120deg, rgba(20, 16, 12, 0.92), rgba(12, 9, 7, 0.82));
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(14px);
+  animation: prompt-in 0.35s ease both;
+  pointer-events: none;
+}
+.seated-glyph {
+  font-size: 16px;
+  flex: 0 0 auto;
+}
+.seated-banner div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.seated-banner small {
+  color: #ffd7a1;
+  font-family: var(--mono);
+  font-size: 8px;
+  letter-spacing: 0.15em;
+  font-weight: 600;
+}
+.seated-banner p {
+  margin: 0;
+  color: #e2dcd2;
+  font-size: 11px;
+}
+.seated-banner kbd {
+  display: inline-block;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  font-family: var(--mono);
+  font-size: 9px;
+  color: #ffd7a1;
 }
 .obs-pulse {
   width: 5px;
@@ -5252,3 +5296,314 @@ body.station-open .discoveries {
   background: var(--accent);
   color: #050a12;
 }
+
+/* -------------------------------------------------------------------------
+   Scholar Discourse & Historical Treatise Overlay
+--------------------------------------------------------------------------- */
+.scholar-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  background: rgba(3, 7, 14, 0.9);
+  backdrop-filter: blur(16px);
+  z-index: 100;
+}
+.scholar-overlay[hidden] {
+  display: none !important;
+}
+.scholar-modal {
+  width: min(940px, 94vw);
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
+  background: linear-gradient(175deg, #121a24 0%, #0c1219 100%);
+  border: 1px solid rgba(244, 207, 134, 0.38);
+  border-radius: 14px;
+  box-shadow: 0 28px 72px rgba(0, 0, 0, 0.85), 0 0 44px rgba(244, 207, 134, 0.12);
+  overflow: hidden;
+}
+.scholar-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  background: linear-gradient(90deg, rgba(244, 207, 134, 0.12), transparent);
+  border-bottom: 1px solid rgba(244, 207, 134, 0.22);
+  padding: 20px 24px;
+}
+.scholar-badge {
+  font-size: 11px;
+  font-family: var(--mono);
+  letter-spacing: 0.08em;
+  color: var(--gold, #f4cf86);
+  display: block;
+}
+.scholar-head h2 {
+  font-family: 'Space Grotesk', sans-serif;
+  font-size: 26px;
+  color: #fff8ed;
+  margin: 4px 0 2px 0;
+}
+.scholar-meta {
+  font-size: 13px;
+  color: #cbd5e1;
+  font-family: sans-serif;
+}
+.scholar-body {
+  display: flex;
+  gap: 24px;
+  padding: 24px;
+  max-height: calc(88vh - 90px);
+  overflow-y: auto;
+}
+.scholar-sidebar {
+  flex: 0 0 240px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  align-items: center;
+  text-align: center;
+}
+.scholar-portrait-frame {
+  width: 190px;
+  height: 230px;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 2px solid rgba(244, 207, 134, 0.5);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.6), 0 0 20px rgba(244, 207, 134, 0.15);
+  background: #090e15;
+}
+.scholar-portrait-frame img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.scholar-citation {
+  background: rgba(2, 6, 12, 0.5);
+  border: 1px solid rgba(244, 207, 134, 0.2);
+  border-radius: 8px;
+  padding: 12px;
+  width: 100%;
+}
+.scholar-citation small {
+  display: block;
+  font-size: 10px;
+  font-family: var(--mono);
+  color: var(--gold, #f4cf86);
+  letter-spacing: 0.06em;
+}
+.scholar-citation strong {
+  display: block;
+  font-size: 13px;
+  font-family: Georgia, serif;
+  font-style: italic;
+  color: #f5f0e3;
+  margin: 4px 0;
+}
+.scholar-citation span {
+  display: block;
+  font-size: 11px;
+  color: #94a3b8;
+  font-family: var(--mono);
+}
+.scholar-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.scholar-quote {
+  border-left: 3px solid var(--gold, #f4cf86);
+  padding: 12px 18px;
+  margin: 0;
+  font-family: Georgia, serif;
+  font-style: italic;
+  font-size: 16px;
+  line-height: 1.55;
+  color: #fbeed7;
+  background: rgba(244, 207, 134, 0.06);
+  border-radius: 0 8px 8px 0;
+}
+.scholar-law-card {
+  background: rgba(3, 9, 16, 0.75);
+  border: 1px solid rgba(126, 249, 255, 0.25);
+  border-radius: 8px;
+  padding: 14px 18px;
+}
+.scholar-law-card small {
+  font-size: 10px;
+  font-family: var(--mono);
+  letter-spacing: 0.06em;
+  color: var(--accent, #7ef9ff);
+  display: block;
+}
+.scholar-equation-wrap {
+  margin: 8px 0 6px 0;
+}
+.scholar-equation {
+  font-size: 17px;
+  font-family: var(--mono);
+  font-weight: 700;
+  color: var(--gold, #f4cf86);
+  background: rgba(0, 0, 0, 0.45);
+  padding: 6px 12px;
+  border-radius: 6px;
+  display: inline-block;
+}
+.scholar-subformula {
+  margin: 6px 0 0 0;
+  font-size: 12px;
+  font-family: Georgia, serif;
+  font-style: italic;
+  color: #cbd5e1;
+}
+.scholar-narrative {
+  background: rgba(255, 255, 255, 0.025);
+  border-radius: 8px;
+  padding: 14px 16px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+.scholar-narrative h4 {
+  margin: 0 0 8px 0;
+  font-size: 13px;
+  font-family: var(--mono);
+  color: var(--gold, #f4cf86);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.scholar-narrative p {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.6;
+  color: #e2e8f0;
+}
+.scholar-footer {
+  display: flex;
+  gap: 12px;
+  margin-top: auto;
+  padding-top: 8px;
+}
+.scholar-warp-btn {
+  background: linear-gradient(135deg, rgba(244, 207, 134, 0.25) 0%, rgba(244, 207, 134, 0.1) 100%);
+  border: 1px solid var(--gold, #f4cf86);
+  color: var(--gold, #f4cf86);
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.scholar-warp-btn:hover {
+  background: var(--gold, #f4cf86);
+  color: #0a111a;
+}
+
+/* -------------------------------------------------------------------------
+   Surveyor's Carbide Lantern & Theodolite Reticle Systems
+--------------------------------------------------------------------------- */
+#lantern-chip.active {
+  background: rgba(255, 213, 158, 0.22);
+  border-color: #ffd59e;
+  color: #ffd59e;
+  box-shadow: 0 0 14px rgba(255, 213, 158, 0.4);
+}
+
+.theodolite-reticle-overlay {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.theodolite-reticle-overlay[hidden] {
+  display: none !important;
+}
+.theodolite-vignette {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle at center, transparent 38%, rgba(5, 10, 16, 0.55) 65%, rgba(2, 5, 8, 0.96) 88%);
+}
+.theodolite-scope {
+  position: relative;
+  width: min(720px, 86vmin);
+  height: min(720px, 86vmin);
+  border-radius: 50%;
+  box-shadow: 0 0 0 9999px rgba(3, 7, 12, 0.88), 0 0 35px rgba(212, 175, 55, 0.25) inset;
+  border: 3px solid rgba(212, 175, 55, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.theodolite-crosshair-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+.theodolite-header {
+  position: absolute;
+  top: 32px;
+  left: 50%;
+  transform: translateX(-50%);
+  text-align: center;
+  text-shadow: 0 2px 6px rgba(0, 0, 0, 0.9);
+}
+.theodolite-badge {
+  font-size: 10px;
+  font-family: var(--mono);
+  color: var(--gold, #f4cf86);
+  letter-spacing: 0.1em;
+  display: block;
+}
+.theodolite-header h3 {
+  font-size: 16px;
+  color: #f5f0e3;
+  font-family: 'Space Grotesk', sans-serif;
+  margin: 3px 0 0 0;
+}
+.theodolite-telemetry {
+  position: absolute;
+  bottom: 32px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 20px;
+  align-items: center;
+  background: rgba(5, 11, 18, 0.75);
+  border: 1px solid rgba(212, 175, 55, 0.35);
+  border-radius: 8px;
+  padding: 6px 16px;
+  backdrop-filter: blur(8px);
+}
+.theodolite-metric small {
+  font-size: 9px;
+  font-family: var(--mono);
+  color: #94a3b8;
+  display: block;
+}
+.theodolite-metric span {
+  font-size: 13px;
+  font-family: var(--mono);
+  font-weight: 700;
+  color: var(--gold, #f4cf86);
+}
+.theodolite-metric.prompt span {
+  color: #7ef9ff;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+body.theodolite-active #reticle,
+body.theodolite-active #toolbar,
+body.theodolite-active #field-card {
+  opacity: 0 !important;
+  pointer-events: none !important;
+  transition: opacity 0.2s ease;
+}
+
+

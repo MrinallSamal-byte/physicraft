@@ -233,12 +233,14 @@ export const BLOCK_PALETTE_ORDER: VoxelBlockType[] = [
   'tnt',
 ];
 
-function createCanvas(): [HTMLCanvasElement, CanvasRenderingContext2D] {
+function createCanvas(): [HTMLCanvasElement, CanvasRenderingContext2D | null] {
   const canvas = document.createElement('canvas');
   canvas.width = 16;
   canvas.height = 16;
-  const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
-  ctx.imageSmoothingEnabled = false;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (ctx) {
+    ctx.imageSmoothingEnabled = false;
+  }
   return [canvas, ctx];
 }
 
@@ -525,7 +527,9 @@ class TextureRegistry {
   getTexture(key: string, draw: (ctx: CanvasRenderingContext2D) => void): THREE.CanvasTexture {
     if (this.textures.has(key)) return this.textures.get(key)!;
     const [canvas, ctx] = createCanvas();
-    draw(ctx);
+    if (ctx) {
+      draw(ctx);
+    }
     const texture = makeTexture(canvas);
     this.textures.set(key, texture);
     return texture;

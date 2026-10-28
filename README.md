@@ -342,7 +342,7 @@ Accessible anytime by pressing <kbd>L</kbd> or clicking the **🏛️ PIONEERS**
 | **4** | **Environment Manipulator** | <kbd>K</kbd> | Global controls for planetary gravity (Earth, Moon, Jupiter, Zero-G), atmospheric drag, surface friction, and circadian day/night time. |
 | **5** | **Graph Spawner Oscilloscope** | <kbd>G</kbd> | Deploys a floating real-time oscilloscope that charts position, velocity, energy, or field strength over time. |
 | **6** | **Creative Voxel Builder** | <kbd>B</kbd> | 14 physical material block types (stone, bouncy slime, glowstone, explosive TNT with chain-reaction physics, glass). |
-| **HUD** | **Blender 3D Fidelity Toggle** | `HUD` | Real-time toggle between the lightweight voxel engine and the 32 MB production Blender 5.2 master world. |
+| **HUD** | **Blender 3D Fidelity Toggle** | <kbd>Shift</kbd>+<kbd>B</kbd> | Real-time toggle between the lightweight voxel engine and the 32 MB production Blender 5.2 master world. The GLB streams lazily on first use. |
 
 ---
 
@@ -355,7 +355,9 @@ The world is authored in **Blender 5.2** and exported as an optimized binary GLT
    - High-resolution PBR materials (Principled BSDF) with micro-displacement stone bump maps, brushed brass, dielectric transmission glass, and volumetric neon emission.
    - Theorist Explorer character with physical theorist cloak and copper-banded observation goggles.
 2. **Production Web GLB**: [`public/models/physicraft_world.glb`](file:///home/mrinall-samal/Project-v2/games/public/models/physicraft_world.glb) (32 MB):
-   - Loaded asynchronously by Three.js `GLTFLoader` in [`src/world/World.ts`](file:///home/mrinall-samal/Project-v2/games/src/world/World.ts).
+   - Loaded lazily by Three.js `GLTFLoader` the first time Blender mode is requested, so boot and normal play stay on the lightweight procedural world.
+   - Mirrored on Z (`scale.z = -1`) to align every court, gate, path and apparatus anchor with the gameplay layout.
+   - Character, atmosphere volumes, sky rings, station markers and duplicate apparatus copies are hidden at load time; the live game stations remain the interactive exhibits.
    - PCF soft shadows, physical roughness/metalness parameters, and material transmission support.
 
 ---
@@ -365,22 +367,28 @@ The world is authored in **Blender 5.2** and exported as an optimized binary GLT
 ### Field Exploration (First-Person)
 | Input | Action |
 |---|---|
-| <kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> | Walk / Strafe |
+| <kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> | Walk / Strafe (with material-specific acoustic footsteps) |
 | <kbd>Shift</kbd> | Sprint |
 | <kbd>Space</kbd> | Jump |
+| <kbd>C</kbd> | **Sit down** at study benches / tables · **Stand up** |
+| <kbd>X</kbd> | Toggle **Surveyor's Carbide Lantern** (warm 3200 K golden illumination & flame flicker) |
+| <kbd>E</kbd> or <kbd>Enter</kbd> | Inspect experiment · Converse with seated theorists · Look through **Theodolite Transit** |
 | Mouse Move | Look around (Pointer Lock) |
-| Left Click | Capture mouse / resume play |
-| <kbd>E</kbd> or <kbd>Enter</kbd> | Inspect nearest experiment apparatus |
-| <kbd>Esc</kbd> | Close open modal / release mouse lock |
+| Left Click | Capture mouse / resume play · Mine voxel block (when builder active) |
+| Right Click | Place voxel block (when builder active) |
+| <kbd>Esc</kbd> | Close open modal / Step back from theodolite / release mouse lock |
 
-### Global HUD & Fast Travel
+### Global HUD & Field Instrumentation
 | Input | Action |
 |---|---|
 | <kbd>L</kbd> | Open **Hall of Pioneers & Master Laws** museum archive |
 | <kbd>M</kbd> | Open **World Atlas** & fast-travel map |
 | <kbd>H</kbd> | Open **Field Manual** & guides |
 | <kbd>N</kbd> | Cycle Day / Night sky cycle |
+| <kbd>X</kbd> | Toggle Surveyor's Carbide Lantern |
 | <kbd>I</kbd> | Open **Creative Voxel Inventory** |
+| <kbd>B</kbd> | Toggle the **Creative Voxel Builder** |
+| <kbd>Shift</kbd>+<kbd>B</kbd> | Toggle **Blender 3D** / voxel world mode |
 
 ### Inside an Experiment Station
 | Control | Action |
@@ -452,7 +460,8 @@ npm run preview
 │   │   ├── TelemetryInspector.ts # Raycast wand physics inspector
 │   │   ├── VectorOverlay.ts      # 3D force & velocity arrow vector overlay
 │   │   ├── GraphBoard.ts         # In-world oscilloscope charting
-│   │   └── VoxelBuilder.ts       # Creative block building & TNT chain explosions
+│   │   ├── VoxelBuilder.ts       # Creative block building & TNT chain explosions
+│   │   └── SeatingManager.ts     # Study consoles, sitting kinematics & scholar discourse
 │   ├── player/
 │   │   ├── PlayerController.ts   # First-person kinematics, jumping, slime bounce
 │   │   ├── Input.ts              # Pointer lock, keybinds, and action mapping
@@ -469,13 +478,15 @@ npm run preview
 │   │       ├── relativity.ts     # Spacetime curvature, twin paradox, black holes
 │   │       └── quantum.ts        # Double-slit, photoelectric effect, atomic orbitals
 │   ├── ui/
-│   │   ├── GameUI.ts             # HUD, Hall of Pioneers modal, Atlas, Badges
+│   │   ├── GameUI.ts             # HUD, Hall of Pioneers modal, Atlas, Badges, Scholar modal
 │   │   └── icons.ts              # Procedural SVG iconography
 │   └── world/
-│       ├── World.ts              # Three.js world manager & GLTF loader
+│       ├── World.ts              # Procedural terrain, theodolites, milestone stelae, towers
+│       ├── AtmosphereFX.ts       # Particulate motes with day/night palette shifting
+│       ├── blenderWorld.ts       # Blender 5.2 GLTF import, kinematic animations, lights
 │       ├── textures.ts           # 16x16 pixel-art voxel material textures
 │       ├── voxel.ts              # Instanced voxel mesh batching
-│       └── labels.ts             # High-DPI canvas text banners in 3D
+│       └── labels.ts             # High-DPI canvas text banners & equation plaques
 ├── docs/                         # Documentation images and screenshots
 ├── vite.config.ts                # Vite build and asset pipeline configuration
 └── tsconfig.json                 # Strict TypeScript compiler options

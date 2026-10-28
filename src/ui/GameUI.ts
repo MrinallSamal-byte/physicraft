@@ -11,6 +11,8 @@ import { ICONS } from './icons';
 import { sound } from '../audio/SoundEngine';
 import { type VoxelBlockType, VOXEL_BLOCKS, BLOCK_PALETTE_ORDER } from '../world/textures';
 import { INTUITION_BY_ID } from '../stations/intuition';
+import type { ScholarDialogue } from '../game/SeatingManager';
+import type { TheodoliteStation } from '../world/World';
 
 export interface MapStation {
   id: string;
@@ -72,6 +74,8 @@ export interface GameUICallbacks {
   onBlockSelect?(type: VoxelBlockType): void;
   onGraphToggle(): void;
   onOpenBook(): void;
+  onToggleLantern?(): void;
+  onExitTheodolite?(): void;
   onOpenMap(): void;
   onOpenHelp(): void;
   onBadgeContinue(): void;
@@ -83,7 +87,7 @@ export interface GameUICallbacks {
   onToggleBlenderModel?(): void;
   onStationMinimizeChange?(minimized: boolean): void;
   onOpenPioneers?(): void;
-  onTravelCoordinates?(x: number, z: number): void;
+  onTravelCoordinates?(x: number, z: number, stationId?: string): void;
 }
 
 interface ToolSpec {
@@ -255,6 +259,27 @@ export class GameUI {
   private pioneersOverlay!: HTMLElement;
   private pioneersOpen = false;
   private pioneersCategory = 'all';
+  private scholarOverlay!: HTMLElement;
+  private scholarName!: HTMLElement;
+  private scholarMeta!: HTMLElement;
+  private scholarPortraitImg!: HTMLImageElement;
+  private scholarTreatiseTitle!: HTMLElement;
+  private scholarTreatiseYear!: HTMLElement;
+  private scholarQuote!: HTMLElement;
+  private scholarEquation!: HTMLElement;
+  private scholarSubFormula!: HTMLElement;
+  private scholarNarrativeText!: HTMLElement;
+  private scholarWarpBtn!: HTMLButtonElement;
+  private scholarWarpLabel!: HTMLElement;
+  private scholarOpen = false;
+  private activeScholarDialogue: ScholarDialogue | null = null;
+  private theodoliteReticleOverlay!: HTMLElement;
+  private theodoliteTitle!: HTMLElement;
+  private theodoliteAzimuth!: HTMLElement;
+  private theodoliteElevation!: HTMLElement;
+  private lanternChip!: HTMLElement;
+  private lanternLabel!: HTMLElement;
+  private theodoliteActive = false;
   private blenderModelActive = true;
   private stationMinimized = false;
   private selectedCategory = 'all';
@@ -314,8 +339,9 @@ export class GameUI {
           <div class="hud-top-actions">
             <button class="chip-button" id="tour-chip" data-ui="tour" title="Expedition Starter Tour & Recommendations"><span>🧭</span><span>TOUR GUIDE</span></button>
             <button class="chip-button" id="pioneers-chip" data-ui="pioneers" title="Hall of Pioneers & Laws (L)"><span class="pioneers-icon">🏛️</span><span>PIONEERS</span><kbd>L</kbd></button>
-            <button class="chip-button active" id="model-chip" data-ui="model-toggle" title="Toggle Blender 3D view (B)"><span>🎨</span><span id="model-toggle-label">BLENDER 3D</span><kbd>B</kbd></button>
+            <button class="chip-button" id="model-chip" data-ui="model-toggle" title="Toggle Blender 3D view (Shift+B)"><span>🎨</span><span id="model-toggle-label">VOXEL MODE</span><kbd>⇧B</kbd></button>
             <button class="chip-button daynight-chip" id="daynight-chip" data-ui="daynight" title="Toggle day / night lighting (N)"><span id="daynight-icon" class="daynight-icon" aria-hidden="true">${ICONS.sun}</span><span id="daynight-label">DAY</span><kbd>N</kbd></button>
+            <button class="chip-button" id="lantern-chip" data-ui="lantern" title="Toggle surveyor carbide lantern (X)"><span>🔦</span><span id="lantern-label">LANTERN</span><kbd>X</kbd></button>
             <button class="chip-button" data-ui="atlas" title="Open the world atlas (M)">${ICONS.map}<span>ATLAS</span><kbd>M</kbd></button>
             <button class="chip-button" data-ui="manual" title="Open the field manual (H)">${ICONS.help}<span>MANUAL</span><kbd>H</kbd></button>
           </div>
@@ -429,6 +455,10 @@ export class GameUI {
         </div>
 
         <div class="bottom-center">
+          <div class="seated-banner" id="seated-banner" hidden>
+            <span class="seated-glyph">🧘</span>
+            <div><small id="seated-title">CONTEMPLATING THE LAWS OF NATURE</small><p id="seated-desc">Seated at Study Table · Press <kbd>C</kbd> or <kbd>WASD</kbd> to stand</p></div>
+          </div>
           <div class="observation-banner" id="observation-banner" hidden>
             <span class="obs-pulse"></span>
             <div><small id="observation-label">GUIDED OBSERVATION · 01</small><p id="observation-text">—</p></div>
@@ -466,7 +496,7 @@ export class GameUI {
           </div>
           <div class="hints-row">
             <button class="hint-click-btn" data-ui-hint="atlas" title="Open World Atlas (M)"><kbd>M</kbd> Atlas</button>
-            <button class="hint-click-btn" data-ui-hint="model" title="Toggle Blender 3D View (B)"><kbd>B</kbd> 3D</button>
+            <button class="hint-click-btn" data-ui-hint="model" title="Toggle Blender 3D View (Shift+B)"><kbd>⇧B</kbd> 3D</button>
             <button class="hint-click-btn" data-ui-hint="pioneers" title="Hall of Pioneers (L)"><kbd>L</kbd> Pioneers</button>
             <button class="hint-click-btn" data-ui-hint="guide" title="Expedition Starter Tour"><kbd>★</kbd> Tour</button>
           </div>
@@ -650,7 +680,8 @@ export class GameUI {
                   <div><dt><kbd>M</kbd></dt><dd>World atlas and fast travel</dd></div>
                   <div><dt><kbd>H</kbd></dt><dd>This manual</dd></div>
                   <div><dt><kbd>K</kbd></dt><dd>Environment Manipulator</dd></div>
-                  <div><dt><kbd>B</kbd></dt><dd>Toggle Blender 3D view / Voxel mode</dd></div>
+                  <div><dt><kbd>B</kbd></dt><dd>Toggle the Creative Voxel Builder</dd></div>
+                  <div><dt><kbd>⇧B</kbd></dt><dd>Toggle Blender 3D view / Voxel mode</dd></div>
                   <div><dt><kbd>TAB</kbd></dt><dd>Minimize / expand experiment panel</dd></div>
                   <div><dt><kbd>I</kbd></dt><dd>Creative materials inventory</dd></div>
                   <div><dt><kbd>N</kbd></dt><dd>Toggle day / night lighting</dd></div>
@@ -787,6 +818,115 @@ export class GameUI {
           </div>
         </div>
       </section>
+
+      <section class="overlay scholar-overlay" id="scholar-overlay" hidden>
+        <div class="modal scholar-modal">
+          <header class="modal-head scholar-head">
+            <div class="scholar-head-left">
+              <span class="scholar-badge">📜 HISTORICAL TREATISE & THEORIST DISCOURSE</span>
+              <h2 id="scholar-name">Sir Isaac Newton</h2>
+              <span class="scholar-meta" id="scholar-meta">1643 – 1727 · Classical Dynamics & Universal Gravitation</span>
+            </div>
+            <button class="icon-close" data-scholar-close title="Close dialogue (Esc)">${ICONS.close}</button>
+          </header>
+
+          <div class="scholar-body">
+            <div class="scholar-sidebar">
+              <div class="scholar-portrait-frame">
+                <img id="scholar-portrait-img" src="/portraits/newton_raw.jpg" alt="Scholar Portrait" />
+              </div>
+              <div class="scholar-citation">
+                <small>HISTORIC TREATISE</small>
+                <strong id="scholar-treatise-title">Philosophiæ Naturalis Principia Mathematica</strong>
+                <span id="scholar-treatise-year">London, 1687 (Royal Society)</span>
+              </div>
+            </div>
+
+            <div class="scholar-content">
+              <blockquote class="scholar-quote" id="scholar-quote">
+                "If I have seen further, it is by standing on the shoulders of Giants."
+              </blockquote>
+
+              <div class="scholar-law-card">
+                <small>GOVERNING MATHEMATICAL FORMULATION</small>
+                <div class="scholar-equation-wrap">
+                  <code class="scholar-equation" id="scholar-equation">F = dp/dt = m·a</code>
+                </div>
+                <p class="scholar-subformula" id="scholar-subformula">In an isolated system, total linear momentum Σ p is strictly conserved across all collisions.</p>
+              </div>
+
+              <div class="scholar-narrative">
+                <h4>Authentic Theoretical Discourse</h4>
+                <p id="scholar-narrative-text">
+                  Welcome, scholar. Here in Sector 01, we study how motion persists unchanged unless compelled by an impressed force.
+                </p>
+              </div>
+
+              <div class="scholar-footer">
+                <button class="btn primary scholar-warp-btn" id="scholar-warp-btn">
+                  <span>🔬</span> <span id="scholar-warp-label">Examine Momentum Collision Laboratory</span>
+                </button>
+                <button class="btn ghost" data-scholar-close>Return to Rotunda</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Interactive Surveyor's Theodolite Optical Sighting Reticle -->
+      <div class="theodolite-reticle-overlay" id="theodolite-reticle-overlay" hidden>
+        <div class="theodolite-vignette"></div>
+        <div class="theodolite-scope">
+          <div class="theodolite-lens-border"></div>
+          <svg class="theodolite-crosshair-svg" viewBox="-200 -200 400 400">
+            <!-- Ballistic Stadia Crosshairs & Mil-dots -->
+            <line x1="-190" y1="0" x2="190" y2="0" stroke="rgba(212, 175, 55, 0.75)" stroke-width="1.5" />
+            <line x1="0" y1="-190" x2="0" y2="190" stroke="rgba(212, 175, 55, 0.75)" stroke-width="1.5" />
+            <circle cx="0" cy="0" r="18" fill="none" stroke="rgba(212, 175, 55, 0.9)" stroke-width="1.2" />
+            <circle cx="0" cy="0" r="2.5" fill="rgba(212, 175, 55, 0.95)" />
+            <!-- Horizontal Mil-dot Graduation Ticks -->
+            <line x1="-40" y1="-4" x2="-40" y2="4" stroke="rgba(212, 175, 55, 0.7)" stroke-width="1.2" />
+            <line x1="-80" y1="-7" x2="-80" y2="7" stroke="rgba(212, 175, 55, 0.7)" stroke-width="1.2" />
+            <line x1="-120" y1="-4" x2="-120" y2="4" stroke="rgba(212, 175, 55, 0.7)" stroke-width="1.2" />
+            <line x1="-160" y1="-10" x2="-160" y2="10" stroke="rgba(212, 175, 55, 0.85)" stroke-width="1.4" />
+            <line x1="40" y1="-4" x2="40" y2="4" stroke="rgba(212, 175, 55, 0.7)" stroke-width="1.2" />
+            <line x1="80" y1="-7" x2="80" y2="7" stroke="rgba(212, 175, 55, 0.7)" stroke-width="1.2" />
+            <line x1="120" y1="-4" x2="120" y2="4" stroke="rgba(212, 175, 55, 0.7)" stroke-width="1.2" />
+            <line x1="160" y1="-10" x2="160" y2="10" stroke="rgba(212, 175, 55, 0.85)" stroke-width="1.4" />
+            <!-- Vertical Mil-dot Graduation Ticks -->
+            <line x1="-4" y1="40" x2="4" y2="40" stroke="rgba(212, 175, 55, 0.7)" stroke-width="1.2" />
+            <line x1="-7" y1="80" x2="7" y2="80" stroke="rgba(212, 175, 55, 0.7)" stroke-width="1.2" />
+            <line x1="-4" y1="120" x2="4" y2="120" stroke="rgba(212, 175, 55, 0.7)" stroke-width="1.2" />
+            <line x1="-10" y1="160" x2="10" y2="160" stroke="rgba(212, 175, 55, 0.85)" stroke-width="1.4" />
+            <line x1="-4" y1="-40" x2="4" y2="-40" stroke="rgba(212, 175, 55, 0.7)" stroke-width="1.2" />
+            <line x1="-7" y1="-80" x2="7" y2="-80" stroke="rgba(212, 175, 55, 0.7)" stroke-width="1.2" />
+            <line x1="-4" y1="-120" x2="4" y2="-120" stroke="rgba(212, 175, 55, 0.7)" stroke-width="1.2" />
+            <line x1="-10" y1="-160" x2="10" y2="-160" stroke="rgba(212, 175, 55, 0.85)" stroke-width="1.4" />
+          </svg>
+
+          <!-- Top Header: Sighting Station Name & Magnification -->
+          <div class="theodolite-header">
+            <span class="theodolite-badge">OPTICAL GEODETIC TRANSIT · 4× MAGNIFICATION</span>
+            <h3 id="theodolite-title">Mechanics Canyon Theodolite</h3>
+          </div>
+
+          <!-- Bottom Telemetry HUD -->
+          <div class="theodolite-telemetry">
+            <div class="theodolite-metric">
+              <small>AZIMUTH BEARING</small>
+              <span id="theodolite-azimuth">210.4° SSW</span>
+            </div>
+            <div class="theodolite-metric">
+              <small>ALTITUDE ELEVATION</small>
+              <span id="theodolite-elevation">-08.6° EL</span>
+            </div>
+            <div class="theodolite-metric prompt" id="theodolite-exit-prompt">
+              <small>TRANSIT CONTROLS</small>
+              <span>[E] / [Esc] STEP BACK</span>
+            </div>
+          </div>
+        </div>
+      </div>
     `;
   }
 
@@ -803,6 +943,24 @@ export class GameUI {
     this.inventoryOverlay = q('#inventory-overlay');
     this.pioneersOverlay = q('#pioneers-overlay');
     this.guideOverlay = q('#guide-overlay');
+    this.scholarOverlay = q('#scholar-overlay');
+    this.scholarName = q('#scholar-name');
+    this.scholarMeta = q('#scholar-meta');
+    this.scholarPortraitImg = q('#scholar-portrait-img');
+    this.scholarTreatiseTitle = q('#scholar-treatise-title');
+    this.scholarTreatiseYear = q('#scholar-treatise-year');
+    this.scholarQuote = q('#scholar-quote');
+    this.scholarEquation = q('#scholar-equation');
+    this.scholarSubFormula = q('#scholar-subformula');
+    this.scholarNarrativeText = q('#scholar-narrative-text');
+    this.scholarWarpBtn = q('#scholar-warp-btn');
+    this.scholarWarpLabel = q('#scholar-warp-label');
+    this.theodoliteReticleOverlay = q('#theodolite-reticle-overlay');
+    this.theodoliteTitle = q('#theodolite-title');
+    this.theodoliteAzimuth = q('#theodolite-azimuth');
+    this.theodoliteElevation = q('#theodolite-elevation');
+    this.lanternChip = q('#lantern-chip');
+    this.lanternLabel = q('#lantern-label');
     this.pausePrompt = q('#pause-prompt');
     this.toastStack = q('#toast-stack');
     this.mapSvg = this.root.querySelector<SVGSVGElement>('#map-svg')!;
@@ -931,6 +1089,28 @@ export class GameUI {
     );
     this.pioneersOverlay.addEventListener('click', (event) => {
       if (event.target === this.pioneersOverlay) this.closePioneers();
+    });
+
+    this.root.querySelectorAll<HTMLElement>('[data-scholar-close]').forEach((button) =>
+      button.addEventListener('click', () => this.closeScholar()),
+    );
+    this.scholarOverlay.addEventListener('click', (event) => {
+      if (event.target === this.scholarOverlay) this.closeScholar();
+    });
+    this.scholarWarpBtn.addEventListener('click', () => {
+      if (this.activeScholarDialogue) {
+        const stationId = this.activeScholarDialogue.stationId;
+        this.closeScholar();
+        this.callbacks.onTravel(stationId);
+      }
+    });
+
+    this.lanternChip.addEventListener('click', () => {
+      this.callbacks.onToggleLantern?.();
+    });
+
+    this.root.querySelector('#theodolite-exit-prompt')?.addEventListener('click', () => {
+      this.callbacks.onExitTheodolite?.();
     });
     this.root.querySelectorAll<HTMLButtonElement>('#pioneers-categories button').forEach((btn) => {
       btn.addEventListener('click', () => {
@@ -1221,16 +1401,40 @@ export class GameUI {
     distance.textContent = `${data.meta} · ${data.distance.toFixed(0)} m`;
   }
 
-  setInteract(data: { title: string; meta: string; accent: string } | null): void {
+  setInteract(
+    data: {
+      title: string;
+      meta: string;
+      accent: string;
+      key?: string;
+      eyebrow?: string;
+    } | null,
+  ): void {
     const prompt = this.root.querySelector<HTMLElement>('#interact-prompt');
     const name = this.root.querySelector<HTMLElement>('#interact-name');
     const meta = this.root.querySelector<HTMLElement>('#interact-meta');
+    const kbd = prompt?.querySelector('kbd');
+    const eyebrow = prompt?.querySelector('small');
     if (!prompt || !name || !meta) return;
     prompt.hidden = !data;
     if (!data) return;
     prompt.style.setProperty('--accent', data.accent);
     name.textContent = data.title;
     meta.textContent = data.meta;
+    if (kbd) kbd.textContent = data.key ?? 'E';
+    if (eyebrow) eyebrow.textContent = data.eyebrow ?? 'INSPECT EXPERIMENT';
+  }
+
+  setSeated(seated: boolean, seatName = 'Study Desk'): void {
+    const banner = this.root.querySelector<HTMLElement>('#seated-banner');
+    const title = this.root.querySelector<HTMLElement>('#seated-title');
+    const desc = this.root.querySelector<HTMLElement>('#seated-desc');
+    if (!banner) return;
+    banner.hidden = !seated;
+    if (seated) {
+      if (title) title.textContent = `CONTEMPLATING · ${seatName.toUpperCase()}`;
+      if (desc) desc.innerHTML = `Resting at study bench · Press <kbd>C</kbd> or <kbd>WASD</kbd> to stand`;
+    }
   }
 
   setEnvironment(env: EnvironmentState): void {
@@ -2255,6 +2459,8 @@ export class GameUI {
     }
   }
 
+  private lastCompassPinsHtml = '';
+
   private updateCompass(yaw: number): void {
     if (!this.compassBearingLabel) return;
 
@@ -2263,7 +2469,10 @@ export class GameUI {
 
     const cardinals = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
     const cardIdx = Math.round(headingDeg / 45) % 8;
-    this.compassBearingLabel.textContent = `${headingDeg.toString().padStart(3, '0')}° ${cardinals[cardIdx]}`;
+    const bearingText = `${headingDeg.toString().padStart(3, '0')}° ${cardinals[cardIdx]}`;
+    if (this.compassBearingLabel.textContent !== bearingText) {
+      this.compassBearingLabel.textContent = bearingText;
+    }
 
     if (this.compassPins && this.stations.length > 0) {
       const px = this.playerPosition.x;
@@ -2283,10 +2492,10 @@ export class GameUI {
         while (diff < -Math.PI) diff += Math.PI * 2;
 
         if (Math.abs(diff) < fovRad) {
-          const pct = 50 + (diff / fovRad) * 46;
+          const pct = (50 + (diff / fovRad) * 46).toFixed(1);
           pinsHtml += `
             <div class="compass-pin ${st.id === this.selectedWaypointId ? 'targeted' : ''}"
-                 style="left:${pct.toFixed(1)}%; --c:${st.accent}"
+                 style="left:${pct}%; --c:${st.accent}"
                  title="${esc(`${st.number} · ${st.shortTitle} (${dist.toFixed(0)}m)`)}"
                  data-compass-st="${st.id}">
               <span class="compass-pin-dot"></span>
@@ -2295,7 +2504,10 @@ export class GameUI {
           `;
         }
       }
-      this.compassPins.innerHTML = pinsHtml;
+      if (pinsHtml !== this.lastCompassPinsHtml) {
+        this.compassPins.innerHTML = pinsHtml;
+        this.lastCompassPinsHtml = pinsHtml;
+      }
     }
   }
 
@@ -2747,6 +2959,14 @@ export class GameUI {
   // ---------------------------------------------------------------------------
 
   closeTopOverlay(): boolean {
+    if (this.theodoliteActive) {
+      this.callbacks.onExitTheodolite?.();
+      return true;
+    }
+    if (this.scholarOpen) {
+      this.closeScholar();
+      return true;
+    }
     if (this.guideOpen) {
       this.closeGuide();
       return true;
@@ -2787,7 +3007,9 @@ export class GameUI {
       this.stationOpen ||
       this.inventoryOpen ||
       this.pioneersOpen ||
-      this.guideOpen
+      this.guideOpen ||
+      this.scholarOpen ||
+      this.theodoliteActive
     );
   }
 
@@ -2833,6 +3055,75 @@ export class GameUI {
     return this.pioneersOpen;
   }
 
+  openScholar(dialogue: ScholarDialogue): void {
+    if (this.scholarOpen && this.activeScholarDialogue?.scholarId === dialogue.scholarId) {
+      return;
+    }
+    this.closeTopOverlay();
+    this.activeScholarDialogue = dialogue;
+    this.scholarName.textContent = dialogue.name;
+    this.scholarMeta.textContent = `${dialogue.lifespan} · ${dialogue.discipline}`;
+    this.scholarPortraitImg.src = dialogue.portrait;
+    this.scholarPortraitImg.alt = dialogue.name;
+    this.scholarTreatiseTitle.textContent = dialogue.treatiseTitle;
+    this.scholarTreatiseYear.textContent = dialogue.treatiseYear;
+    this.scholarQuote.textContent = `"${dialogue.quote}"`;
+    this.scholarEquation.textContent = dialogue.keyEquation;
+    this.scholarSubFormula.textContent = dialogue.subFormula;
+    this.scholarNarrativeText.textContent = dialogue.discourse;
+    this.scholarWarpLabel.textContent = `Travel to ${dialogue.stationTitle}`;
+
+    this.scholarOverlay.hidden = false;
+    this.scholarOpen = true;
+    sound.playClick();
+    this.syncBodyClasses();
+  }
+
+  closeScholar(): void {
+    if (!this.scholarOpen) return;
+    this.scholarOpen = false;
+    this.scholarOverlay.hidden = true;
+    this.activeScholarDialogue = null;
+    sound.playClick();
+    this.syncBodyClasses();
+  }
+
+  get isScholarOpen(): boolean {
+    return this.scholarOpen;
+  }
+
+  setTheodoliteActive(active: boolean, theodolite?: TheodoliteStation): void {
+    this.theodoliteActive = active;
+    this.theodoliteReticleOverlay.hidden = !active;
+    if (active && theodolite) {
+      this.theodoliteTitle.textContent = theodolite.name;
+      this.updateTheodoliteReadout(theodolite.lookYaw, theodolite.lookPitch);
+    }
+    this.syncBodyClasses();
+  }
+
+  updateTheodoliteReadout(yaw: number, pitch: number): void {
+    if (!this.theodoliteActive) return;
+    const degYaw = (((yaw * 180 / Math.PI) % 360) + 360) % 360;
+    const degPitch = pitch * 180 / Math.PI;
+
+    const cardinals = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'];
+    const cardIdx = Math.round(degYaw / 22.5) % 16;
+    const cardinal = cardinals[cardIdx];
+
+    this.theodoliteAzimuth.textContent = `${degYaw.toFixed(1).padStart(5, '0')}° ${cardinal}`;
+    this.theodoliteElevation.textContent = `${degPitch >= 0 ? '+' : ''}${degPitch.toFixed(1)}° EL`;
+  }
+
+  get isTheodoliteActive(): boolean {
+    return this.theodoliteActive;
+  }
+
+  setLanternActive(active: boolean): void {
+    this.lanternChip.classList.toggle('active', active);
+    this.lanternLabel.textContent = active ? 'LANTERN ON' : 'LANTERN';
+  }
+
   setBlenderModelActive(active: boolean): void {
     this.blenderModelActive = active;
     const label = this.root.querySelector('#model-toggle-label');
@@ -2842,7 +3133,7 @@ export class GameUI {
     const btn = this.root.querySelector<HTMLElement>('#model-chip');
     if (btn) {
       btn.classList.toggle('active', active);
-      btn.setAttribute('title', active ? 'Toggle Voxel mode (B)' : 'Toggle Blender 3D view (B)');
+      btn.setAttribute('title', active ? 'Toggle Voxel mode (Shift+B)' : 'Toggle Blender 3D view (Shift+B)');
     }
   }
 
@@ -2864,9 +3155,12 @@ export class GameUI {
       quantum: '#a4ffd1',
     };
 
+    const registeredIds = new Set(this.stations.map((s) => s.id));
+
     grid.innerHTML = filtered
       .map((p) => {
         const color = biomeColors[p.biome] || '#7ef9ff';
+        const isInteractive = registeredIds.has(p.stationId);
         return `
         <article class="pioneer-card" data-pioneer="${p.id}" style="--accent:${color}">
           <div class="pioneer-img-wrap">
@@ -2886,10 +3180,10 @@ export class GameUI {
             </div>
             <p class="pioneer-desc">${p.significance}</p>
             <div class="pioneer-actions">
-              <button class="pioneer-btn pioneer-btn-warp" data-warp-x="${p.position[0]}" data-warp-z="${p.position[1]}" data-p-name="${p.name}" title="Warp directly to apparatus">
+              <button class="pioneer-btn pioneer-btn-warp" data-warp-x="${p.position[0]}" data-warp-z="${p.position[1]}" data-p-name="${esc(p.name)}" title="Warp to apparatus viewing position">
                 <span>⚡</span><span>WARP</span>
               </button>
-              <button class="pioneer-btn pioneer-btn-inspect" data-inspect-station="${p.stationId}" title="Inspect apparatus simulation">
+              <button class="pioneer-btn pioneer-btn-inspect" data-inspect-station="${p.stationId}" title="Inspect interactive apparatus simulation">
                 <span>🔬</span><span>INSPECT</span>
               </button>
             </div>
@@ -2909,7 +3203,7 @@ export class GameUI {
         if (this.callbacks.onTravelCoordinates) {
           this.callbacks.onTravelCoordinates(x, z);
         }
-        this.toast(`Warped to ${name}'s Experiment`, 'Apparatus in position', '#f4cf86', '🏛️');
+        this.toast(`Warped to ${name}'s Apparatus`, 'Observation pose engaged', '#f4cf86', '🏛️');
       });
     });
 
@@ -2933,8 +3227,10 @@ export class GameUI {
       this.badgeOpen ||
       this.inventoryOpen ||
       this.pioneersOpen ||
-      this.guideOpen;
+      this.guideOpen ||
+      this.scholarOpen;
     document.body.classList.toggle('overlay-open', anyOverlay);
+    document.body.classList.toggle('theodolite-active', this.theodoliteActive);
   }
 
   dispose(): void {

@@ -18,8 +18,13 @@ import {
   addWireRing,
   VoxelBatch,
 } from './voxel';
-import { makeRadialGlowTexture, seededRandom, hash2, palette, clamp } from '../core/utils';
-import { makeReadoutTexture, makeWorldTitle, type HoloText } from './labels';
+import { makeRadialGlowTexture, seededRandom, hash2, palette, clamp, isVisibleInHierarchy } from '../core/utils';
+import { makeReadoutTexture, makeWorldTitle, makeEquationPlaqueTexture, type HoloText } from './labels';
+import {
+  BLENDER_WORLD_MIRROR_Z,
+  isBlenderColliderCandidate,
+  shouldHideBlenderNode,
+} from './blenderWorld';
 
 interface AmbientSpec {
   sprite: THREE.Sprite;
@@ -34,13 +39,70 @@ interface RimLight {
   phase: number;
 }
 
+export interface TheodoliteStation {
+  id: string;
+  name: string;
+  subtitle: string;
+  position: THREE.Vector3;
+  eyePosition: THREE.Vector3;
+  lookYaw: number;
+  lookPitch: number;
+  elevationAngleDeg: number;
+}
+
 const islandRng = seededRandom(0x51a7c0de);
+
+const BIOME_EQUATIONS: Record<
+  BiomeId,
+  { law: string; formula: string; subFormula: string; citation: string }
+> = {
+  classical: {
+    law: "Newton's Laws & Momentum",
+    formula: 'F = dp/dt = m·a',
+    subFormula: 'In an isolated system: Σ p_initial = Σ p_final',
+    citation: 'Principia Mathematica · 1687',
+  },
+  thermo: {
+    law: 'Carnot Cycle & State Equation',
+    formula: 'PV = n·R·T | η = 1 - Tc/Th',
+    subFormula: 'Thermal efficiency bounded by absolute temperature ratio',
+    citation: 'Réflexions sur la puissance du feu · 1824',
+  },
+  electro: {
+    law: 'Maxwell-Faraday Induction',
+    formula: 'ℰ = -dΦ/dt | F = q(E + v×B)',
+    subFormula: 'Time-varying magnetic flux induces electric force field',
+    citation: 'Experimental Researches in Electricity · 1831',
+  },
+  optics: {
+    law: "Snell's Refraction & Wave Theory",
+    formula: 'n₁ sin θ₁ = n₂ sin θ₂ | c = λ·f',
+    subFormula: 'Light rays refract toward normal in optically denser media',
+    citation: 'La Dioptrique · 1637',
+  },
+  relativity: {
+    law: 'Einstein Field Equations',
+    formula: 'G_μν = (8πG/c⁴) T_μν | E = m·c²',
+    subFormula: 'Mass-energy curves spacetime; geodesics govern motion',
+    citation: 'Grundlage der allgemeinen Relativitätstheorie · 1916',
+  },
+  quantum: {
+    law: 'Schrödinger Wave Evolution',
+    formula: 'iħ ∂Ψ/∂t = ĤΨ | Δx·Δp ≥ ħ/2',
+    subFormula: 'State vector evolves unitary in complex Hilbert space',
+    citation: 'Quantisierung als Eigenwertproblem · 1926',
+  },
+};
 
 export class World {
   group = new THREE.Group();
+  /** Every procedural visual lives here so Blender mode can hide it as one unit. */
+  proceduralGroup = new THREE.Group();
   colliders: THREE.Box3[] = [];
-  baseColliders: THREE.Box3[] = [];
+  proceduralColliders: THREE.Box3[] = [];
+  stationColliders: THREE.Box3[] = [];
   blenderColliders: THREE.Box3[] = [];
+  theodolites: TheodoliteStation[] = [];
   biomeDecor: THREE.Group[] = [];
   coreGroup = new THREE.Group();
   private glowTexture = makeRadialGlowTexture();
@@ -65,10 +127,15 @@ export class World {
   private dayCycleActive = false; // Day Mode is default and frozen in full sunlight unless toggled
   private dayCycleDuration = 480; // 8 minutes for 24h cycle
   private blenderModel: THREE.Group | null = null;
-  private blenderModelVisible = true;
+  private blenderModelVisible = false;
+  private blenderLoadPromise: Promise<boolean> | null = null;
+  private blenderMixer: THREE.AnimationMixer | null = null;
+  private blenderLights = new THREE.Group();
 
   constructor(private scene: THREE.Scene) {
     this.group.name = 'World';
+    this.proceduralGroup.name = 'Procedural_World';
+    this.group.add(this.proceduralGroup);
     scene.add(this.group);
     this.createSky();
     this.createLights();
@@ -78,108 +145,264 @@ export class World {
     this.buildBiomeDecor();
     this.createAmbientLife();
     this.createClouds();
-    this.group.add(this.coreGroup);
-    this.loadBlenderModel();
+    this.buildFieldInstruments();
+    this.proceduralGroup.add(this.coreGroup);
     this.applyShadows();
+    this.buildBlenderLighting();
   }
 
-  private loadBlenderModel(): void {
-    const loader = new GLTFLoader();
-    loader.load(
-      '/models/physicraft_world.glb',
-      (gltf) => {
-        this.blenderModel = gltf.scene;
-        this.blenderModel.name = 'Blender_Production_World';
-        this.blenderModel.visible = this.blenderModelVisible;
+  /**
+   * The 32 MB production scene is streamed only when the explorer first asks
+   * for Blender mode. Boot, tests and normal play stay on the procedural world.
+   */
+  private ensureBlenderModel(): Promise<boolean> {
+    if (this.blenderModel) return Promise.resolve(true);
+    if (this.blenderLoadPromise) return this.blenderLoadPromise;
 
-        this.blenderModel.traverse((child) => {
-          if ((child as THREE.Mesh).isMesh) {
-            const mesh = child as THREE.Mesh;
-            mesh.castShadow = true;
-            mesh.receiveShadow = true;
-            if (mesh.material) {
-              const mat = mesh.material as THREE.MeshStandardMaterial;
-              mat.roughness = Math.max(0.18, mat.roughness);
-              const physMat = mesh.material as THREE.MeshPhysicalMaterial;
-              if (physMat.transmission && physMat.transmission > 0) {
-                mat.transparent = true;
-                mat.opacity = 0.85;
+    this.blenderLoadPromise = new Promise<boolean>((resolve) => {
+      const loader = new GLTFLoader();
+      loader.load(
+        '/models/physicraft_world.glb',
+        (gltf) => {
+          const model = gltf.scene;
+          try {
+            model.name = 'Blender_Production_World';
+            model.scale.z = BLENDER_WORLD_MIRROR_Z;
+            model.visible = false;
+
+            this.prepareBlenderModel(model);
+
+            // Play all baked kinematic animations (monolith levitation, gimbal rings, planetary probes)
+            if (gltf.animations && gltf.animations.length > 0) {
+              this.blenderMixer = new THREE.AnimationMixer(model);
+              for (const clip of gltf.animations) {
+                const action = this.blenderMixer.clipAction(clip);
+                action.play();
               }
+              console.log(`✅ Started ${gltf.animations.length} kinematic animations in Blender 3D world.`);
             }
-          }
-        });
 
-        this.group.add(this.blenderModel);
-        this.generateBlenderColliders();
-        console.log('✅ Physicraft Blender 5.2 Production Model loaded successfully into Three.js world!');
-      },
-      (xhr) => {
-        if (xhr.total > 0) {
-          const pct = Math.round((xhr.loaded / xhr.total) * 100);
-          if (pct % 25 === 0) console.log(`Loading Blender 3D World: ${pct}%`);
-        }
-      },
-      (err) => {
-        console.warn('Notice: Blender GLB load deferred/fallback active:', err);
+            this.group.add(model);
+            this.blenderModel = model;
+            // Collider generation filters by hierarchy visibility, so evaluate
+            // the model while its root is visible, then park it until toggled on.
+            model.visible = true;
+            this.generateBlenderColliders();
+            model.visible = false;
+            console.log(
+              `✅ Physicraft Blender 5.2 production world loaded (${this.blenderColliders.length} obstacle colliders).`,
+            );
+            resolve(true);
+          } catch (error) {
+            console.warn('Notice: Blender GLB preparation failed; procedural world remains active:', error);
+            this.group.remove(model);
+            this.blenderModel = null;
+            this.blenderColliders = [];
+            this.blenderLoadPromise = null;
+            this.rebuildColliders();
+            resolve(false);
+          }
+        },
+        (xhr) => {
+          if (xhr.total > 0) {
+            const pct = Math.round((xhr.loaded / xhr.total) * 100);
+            if (pct % 25 === 0) console.log(`Loading Blender 3D World: ${pct}%`);
+          }
+        },
+        (err) => {
+          console.warn('Notice: Blender GLB load failed; procedural world remains active:', err);
+          this.blenderLoadPromise = null;
+          resolve(false);
+        },
+      );
+    });
+
+    return this.blenderLoadPromise;
+  }
+
+  private prepareBlenderModel(model: THREE.Group): void {
+    const byName = new Map<string, THREE.Object3D>();
+    model.traverse((child) => {
+      if (child.name) byName.set(child.name, child);
+    });
+
+    let hidden = 0;
+    model.traverse((child) => {
+      if (shouldHideBlenderNode(child.name)) {
+        child.visible = false;
+        hidden++;
+        return;
       }
-    );
+      if (this.isDuplicateBlenderNode(child, byName)) {
+        child.visible = false;
+        hidden++;
+        return;
+      }
+
+      if ((child as THREE.Mesh).isMesh) {
+        const mesh = child as THREE.Mesh;
+        const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        let isTransparent = false;
+        for (const material of materials) {
+          if (!material) continue;
+          // A mirrored model reverses triangle winding, so render both sides.
+          material.side = THREE.DoubleSide;
+          material.shadowSide = THREE.DoubleSide;
+          material.needsUpdate = true;
+
+          const standard = material as THREE.MeshStandardMaterial;
+          if (typeof standard.roughness === 'number') {
+            standard.roughness = Math.max(0.18, standard.roughness);
+          }
+          const physical = material as THREE.MeshPhysicalMaterial;
+          if (physical.transmission && physical.transmission > 0) {
+            material.transparent = true;
+            material.opacity = 0.85;
+            isTransparent = true;
+          }
+          if (material.transparent || material.opacity < 0.99) {
+            isTransparent = true;
+          }
+        }
+        mesh.castShadow = !isTransparent;
+        mesh.receiveShadow = true;
+      }
+    });
+
+    console.log(`✅ Blender world prepared; hid ${hidden} character/duplicate/atmosphere nodes.`);
+  }
+
+  /** Blender exports exact linked duplicates as Name.001; drop the extra copy. */
+  private isDuplicateBlenderNode(child: THREE.Object3D, byName: Map<string, THREE.Object3D>): boolean {
+    if (!child.name.endsWith('.001')) return false;
+    const base = byName.get(child.name.slice(0, -4));
+    if (!base || base === child) return false;
+
+    const childMesh = child as THREE.Mesh;
+    const baseMesh = base as THREE.Mesh;
+    if (!childMesh.isMesh || !baseMesh.isMesh) return false;
+
+    const sameTransform =
+      child.position.equals(base.position) &&
+      child.quaternion.equals(base.quaternion) &&
+      child.scale.equals(base.scale);
+    if (!sameTransform) return false;
+
+    const childName = materialName(childMesh.material);
+    const baseName = materialName(baseMesh.material);
+    return childName.replace(/\.001/g, '') === baseName.replace(/\.001/g, '');
   }
 
   private generateBlenderColliders(): void {
     if (!this.blenderModel) return;
     this.blenderColliders = [];
     this.blenderModel.updateWorldMatrix(true, true);
-
-    const IGNORE_REGEX = /Streamline|Water|Ocean|Atmosphere|Volume|Trigger|Glow|Particle|Ray|Beam|Sky|Fog|Cloud|Wire|Floor|Ground|Base_Disc|Ring/i;
+    const seen = new Set<string>();
 
     this.blenderModel.traverse((child) => {
-      if ((child as THREE.Mesh).isMesh) {
-        const mesh = child as THREE.Mesh;
-        const name = mesh.name || child.parent?.name || '';
-        if (IGNORE_REGEX.test(name)) return;
+      if (!(child as THREE.Mesh).isMesh) return;
+      if (!isVisibleInHierarchy(child)) return;
 
-        const mat = mesh.material as THREE.Material;
-        if (mat && mat.transparent && (mat.opacity ?? 1) < 0.6) return;
-
-        const box = new THREE.Box3().setFromObject(mesh);
-        if (box.isEmpty()) return;
-
-        const sizeX = box.max.x - box.min.x;
-        const sizeY = box.max.y - box.min.y;
-        const sizeZ = box.max.z - box.min.z;
-
-        // Obstacle criteria at player walking height:
-        if (box.min.y > 2.4 || box.max.y < 0.2) return;
-        if (sizeX > 35 || sizeZ > 35) return;
-        if (sizeX < 0.25 && sizeZ < 0.25) return;
-        if (sizeY < 0.22 && box.min.y <= 0.05) return;
-
-        this.blenderColliders.push(box);
+      const mesh = child as THREE.Mesh;
+      const name = mesh.name || child.parent?.name || '';
+      const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+      if (materials.length > 0 && materials.every((mat) => mat && mat.transparent && (mat.opacity ?? 1) < 0.6)) {
+        return;
       }
+
+      const box = new THREE.Box3().setFromObject(mesh);
+      if (!isBlenderColliderCandidate(name, box)) return;
+
+      // Collapse exact duplicate AABBs (linked meshes) into one obstacle.
+      const key = [box.min.x, box.min.y, box.min.z, box.max.x, box.max.y, box.max.z]
+        .map((value) => value.toFixed(2))
+        .join(',');
+      if (seen.has(key)) return;
+      seen.add(key);
+
+      this.blenderColliders.push(box);
     });
 
     this.rebuildColliders();
-    console.log(`✅ Loaded ${this.blenderColliders.length} Blender 3D obstacle colliders`);
   }
 
+  /**
+   * Rebuilds the shared collider array in place: PlayerController, the graph
+   * board and the voxel builder all hold a reference to it.
+   */
   rebuildColliders(): void {
+    const known = new Set<THREE.Box3>([
+      ...this.proceduralColliders,
+      ...this.stationColliders,
+      ...this.blenderColliders,
+    ]);
+    // Player-placed voxel colliders are appended directly to `colliders`.
+    const dynamic = this.colliders.filter((box) => !known.has(box));
+
     this.colliders.length = 0;
-    for (const b of this.baseColliders) this.colliders.push(b);
+    if (!this.blenderModelVisible) {
+      this.colliders.push(...this.proceduralColliders);
+    }
+    this.colliders.push(...this.stationColliders);
     if (this.blenderModelVisible) {
-      for (const b of this.blenderColliders) this.colliders.push(b);
+      this.colliders.push(...this.blenderColliders);
+    }
+    this.colliders.push(...dynamic);
+  }
+
+  /** Returns true when the requested world is actually active. */
+  async setBlenderModelVisible(visible: boolean): Promise<boolean> {
+    if (visible) {
+      const ready = await this.ensureBlenderModel();
+      if (!ready) return false;
+    }
+    this.blenderModelVisible = visible;
+    this.applyWorldMode();
+    return true;
+  }
+
+  private buildBlenderLighting(): void {
+    this.blenderLights.name = 'Blender_Lighting';
+    this.blenderLights.visible = false;
+    this.group.add(this.blenderLights);
+
+    // 1. Central golden rotunda radiance at (0, 6.5, 0)
+    addPointLight(this.blenderLights, '#ffd7a1', 3.0, 26, [0, 6.5, 0]);
+
+    // 2. Six biome gate lights at r = 32m matching each discipline's spectral accent
+    for (const biome of BIOMES) {
+      const angle = (biome.index / BIOMES.length) * Math.PI * 2;
+      const x = Math.cos(angle) * 32;
+      const z = Math.sin(angle) * 32;
+      addPointLight(this.blenderLights, biome.accent, 2.2, 18, [x, 3.2, z]);
+      // Intermediate walkway beacons at r = 58m
+      const mx = Math.cos(angle) * 58;
+      const mz = Math.sin(angle) * 58;
+      addPointLight(this.blenderLights, '#ffcb78', 1.6, 14, [mx, 2.4, mz]);
     }
   }
 
-  setBlenderModelVisible(visible: boolean): void {
-    this.blenderModelVisible = visible;
+  private applyWorldMode(): void {
+    this.proceduralGroup.visible = !this.blenderModelVisible;
     if (this.blenderModel) {
-      this.blenderModel.visible = visible;
+      this.blenderModel.visible = this.blenderModelVisible;
     }
+    this.blenderLights.visible = this.blenderModelVisible;
     this.rebuildColliders();
   }
 
   isBlenderModelVisible(): boolean {
     return this.blenderModelVisible;
+  }
+
+  isBlenderModelReady(): boolean {
+    return this.blenderModel !== null;
+  }
+
+  /** The environment group that should receive raycasts for the active mode. */
+  getActiveEnvironmentGroup(): THREE.Object3D {
+    if (this.blenderModelVisible && this.blenderModel) return this.blenderModel;
+    return this.proceduralGroup;
   }
 
   private createSky(): void {
@@ -298,9 +521,9 @@ export class World {
     this.scene.add(this.playerLight);
 
     // A soft halo over the hall that can be seen from every path.
-    const halo = addGlowSprite(this.scene, this.glowTexture, [0, 17, 0], 38, '#ffd58e', 0.35);
+    const halo = addGlowSprite(this.proceduralGroup, this.glowTexture, [0, 17, 0], 38, '#ffd58e', 0.35);
     halo.material.depthTest = false;
-    addPointLight(this.group, '#ffd7a1', 4.2, 45, [0, 10, 0]);
+    addPointLight(this.proceduralGroup, '#ffd7a1', 4.2, 45, [0, 10, 0]);
   }
 
   private buildIsland(): void {
@@ -375,7 +598,7 @@ export class World {
       this.addCollider(new THREE.Vector3(x, 2.5, z), new THREE.Vector3(1.2 * treeScale, 5.0, 1.2 * treeScale));
     }
 
-    batch.build(this.group, 'island');
+    batch.build(this.proceduralGroup, 'island');
   }
 
   private nearPath(x: number, z: number, threshold: number): boolean {
@@ -416,7 +639,7 @@ export class World {
         const normal = new THREE.Vector2(-biome.center.y, biome.center.x).normalize();
         const side = i % 2 === 0 ? 1 : -1;
         addLantern(
-          this.group,
+          this.proceduralGroup,
           point.x + normal.x * 4.2 * side,
           point.z + normal.y * 4.2 * side,
           biome.color,
@@ -424,7 +647,7 @@ export class World {
         );
       }
     }
-    batch.build(this.group, 'paths');
+    batch.build(this.proceduralGroup, 'paths');
   }
 
   private buildHub(): void {
@@ -507,7 +730,7 @@ export class World {
       const signPos = lintelPos.clone().addScaledVector(inward, 0.21);
       labelMesh.position.set(signPos.x, 9.85, signPos.z);
       labelMesh.rotation.y = -angle + Math.PI;
-      this.group.add(labelMesh);
+      this.proceduralGroup.add(labelMesh);
 
       // Path-side glyph monoliths with physical stone base, collar, biome cap, and collision.
       const glyphPos = gatePos.clone().addScaledVector(tangent, 5.9);
@@ -539,7 +762,49 @@ export class World {
       const glyphFacePos = glyphPos.clone().addScaledVector(inward, 0.41);
       glyph.position.set(glyphFacePos.x, 1.75, glyphFacePos.z);
       glyph.rotation.y = -angle + Math.PI;
-      this.group.add(glyph);
+      this.proceduralGroup.add(glyph);
+
+      // Opposite side: Milestone Gateway Equation Monolith with authentic governing equations
+      const stelePos = gatePos.clone().addScaledVector(tangent, -5.9);
+      batch.add(stelePos.x, 0.2, stelePos.z, 2.0, 0.4, 2.0, 0x18242c);
+      batch.add(stelePos.x, 1.6, stelePos.z, 1.7, 2.6, 0.8, 0x22333c, {
+        rotation: [0, -angle, 0],
+      });
+      batch.add(stelePos.x, 0.45, stelePos.z, 1.78, 0.1, 0.88, 0xc7a35d, {
+        rotation: [0, -angle, 0],
+      });
+      batch.add(stelePos.x, 2.95, stelePos.z, 1.74, 0.1, 0.84, biome.color, {
+        glow: true,
+        rotation: [0, -angle, 0],
+      });
+      this.addCollider(new THREE.Vector3(stelePos.x, 1.5, stelePos.z), new THREE.Vector3(2.0, 3.0, 2.0));
+
+      const steleData = BIOME_EQUATIONS[biome.id];
+      if (steleData) {
+        const steleTexture = makeEquationPlaqueTexture(
+          biome.shortName,
+          steleData.law,
+          steleData.formula,
+          steleData.subFormula,
+          steleData.citation,
+          biome.accent,
+        );
+        const steleMesh = new THREE.Mesh(
+          new THREE.PlaneGeometry(1.5, 2.1),
+          new THREE.MeshBasicMaterial({
+            map: steleTexture,
+            transparent: true,
+            toneMapped: false,
+            depthWrite: true,
+            alphaTest: 0.05,
+            side: THREE.FrontSide,
+          }),
+        );
+        const steleFacePos = stelePos.clone().addScaledVector(inward, 0.41);
+        steleMesh.position.set(steleFacePos.x, 1.65, steleFacePos.z);
+        steleMesh.rotation.y = -angle + Math.PI;
+        this.proceduralGroup.add(steleMesh);
+      }
     }
 
     // Central plinth, deed-stone and instrument rings.
@@ -609,7 +874,7 @@ export class World {
     // Flush on south face of the 0.16m chassis (5.2 + 0.08 = 5.28 -> 5.285)
     southBoard.position.set(0, 2.65, monZ + 0.085);
     southBoard.rotation.y = 0; // Faces +Z towards approaching explorer
-    this.group.add(southBoard);
+    this.proceduralGroup.add(southBoard);
 
     // North Face (facing explorer returning from central rotunda core)
     const thermalConstTexture = makeReadoutTexture(
@@ -639,7 +904,7 @@ export class World {
     // Flush on north face of the 0.16m chassis (5.2 - 0.08 = 5.12 -> 5.115)
     northBoard.position.set(0, 2.65, monZ - 0.085);
     northBoard.rotation.y = Math.PI; // Faces -Z towards central core
-    this.group.add(northBoard);
+    this.proceduralGroup.add(northBoard);
 
     const core = new THREE.Mesh(
       new THREE.IcosahedronGeometry(1.35, 1),
@@ -676,7 +941,7 @@ export class World {
 
     const title = makeWorldTitle('The Hall of Constants', 'Spawn Rotunda · Grand Physics Sandbox', '#ffd48b', 3.1);
     title.position.set(0, 10.2, 0);
-    this.group.add(title);
+    this.proceduralGroup.add(title);
     this.gateLabels.push(title);
 
     // Benches / consoles around the hub with physical colliders.
@@ -689,15 +954,15 @@ export class World {
       this.addCollider(new THREE.Vector3(x, 0.45, z), new THREE.Vector3(2.8, 0.9, 1.2));
     }
 
-    batch.build(this.group, 'hub');
-    addPointLight(this.group, '#ffcb87', 2.8, 18, [0, 5, 0]);
+    batch.build(this.proceduralGroup, 'hub');
+    addPointLight(this.proceduralGroup, '#ffcb87', 2.8, 18, [0, 5, 0]);
   }
 
   private buildBiomeDecor(): void {
     for (const biome of BIOMES) {
       const group = new THREE.Group();
       group.name = `biome-${biome.id}`;
-      this.group.add(group);
+      this.proceduralGroup.add(group);
       this.biomeDecor.push(group);
       const local = new VoxelBatch();
       const c = biome.center;
@@ -733,6 +998,15 @@ export class World {
         this.buildMesa(local, c.x - 25, c.y - 18, rng, biome);
         this.buildMesa(local, c.x + 25, c.y - 13, rng, biome);
         this.buildMesa(local, c.x + 35, c.y + 18, rng, biome);
+        // Downrange Trajectory Calibration Towers in Mechanics Canyon
+        this.addCalibrationTower(local, group, -18, -66, 12);
+        this.addCalibrationTower(local, group, -22, -82, 12);
+        this.addCalibrationTower(local, group, -26, -98, 12);
+        // Sedimentary Sandstone Terraced Strata
+        this.buildSedimentaryStrata(local, c.x - 18, c.y - 12, rng);
+        this.buildSedimentaryStrata(local, c.x + 18, c.y - 12, rng);
+        this.buildSedimentaryStrata(local, c.x - 28, c.y + 14, rng);
+        this.buildSedimentaryStrata(local, c.x + 28, c.y + 14, rng);
         for (let i = 0; i < 10; i++) {
           const x = c.x + (rng() - 0.5) * 55;
           const z = c.y + (rng() - 0.5) * 55;
@@ -743,6 +1017,7 @@ export class World {
       } else if (biome.id === 'thermo') {
         this.buildThermalPool(local, c.x + tangent.x * 23, c.y + tangent.y * 23, biome);
         this.buildThermalPool(local, c.x - tangent.x * 22, c.y - tangent.y * 22, biome);
+        this.buildMineralVeins(local, c.x, c.y, biome);
         for (let i = 0; i < 8; i++) {
           const a = rng() * Math.PI * 2;
           const radius = 18 + rng() * 12;
@@ -755,6 +1030,7 @@ export class World {
         addCrystal(group, c.x + inward.x * 28 + 8, c.y + inward.y * 28 + 2, 4, 0x49e6cb, true);
       } else if (biome.id === 'electro') {
         this.buildFoundryArc(local, c, biome, rng);
+        this.buildColumnarBasalt(local, c.x, c.y, biome, rng);
         for (let i = 0; i < 5; i++) {
           const a = (i / 5) * Math.PI * 2;
           const x = c.x + Math.cos(a) * 25;
@@ -762,6 +1038,7 @@ export class World {
           this.buildPylon(local, group, x, z, biome, i);
         }
       } else if (biome.id === 'optics') {
+        this.buildFluoriteCluster(group, c.x, c.y);
         for (let i = 0; i < 20; i++) {
           const a = rng() * Math.PI * 2;
           const r = 20 + rng() * 12;
@@ -854,7 +1131,7 @@ export class World {
     for (let i = 0; i < 7; i++) {
       const px = x + (hash2(i, x) - 0.5) * 9;
       const pz = z + (hash2(i, z) - 0.5) * 6;
-      addGlowSprite(this.group, this.glowTexture, [px, 0.45, pz], 0.8, '#9bffe6', 0.32);
+      addGlowSprite(this.proceduralGroup, this.glowTexture, [px, 0.45, pz], 0.8, '#9bffe6', 0.32);
     }
   }
 
@@ -881,6 +1158,321 @@ export class World {
     arc.userData.pylon = index;
   }
 
+  private buildSedimentaryStrata(batch: VoxelBatch, x: number, z: number, rng: () => number): void {
+    const strataColors = [0x9b5d3a, 0xc48252, 0x824c30, 0xdcb07b, 0x7a3f24];
+    for (let layer = 0; layer < 5; layer++) {
+      const y = 0.4 + layer * 0.85;
+      const w = 8 - layer * 0.8 + rng() * 1.2;
+      const d = 6 - layer * 0.6 + rng() * 1.0;
+      const col = strataColors[layer % strataColors.length];
+      batch.add(x, y, z, w, 0.85, d, col);
+    }
+  }
+
+  private buildMineralVeins(batch: VoxelBatch, cx: number, cz: number, _biome: BiomeDefinition): void {
+    const copper = 0xb87333; // Burnished native copper
+    const verdigris = 0x43b39b; // Oxidized copper patina
+    for (let i = 0; i < 14; i++) {
+      const angle = (i / 14) * Math.PI * 2;
+      const r = 16 + (i % 3) * 4;
+      const vx = cx + Math.cos(angle) * r;
+      const vz = cz + Math.sin(angle) * r;
+      batch.add(vx, 0.08, vz, 1.8, 0.04, 0.4, i % 2 === 0 ? copper : verdigris, {
+        rotation: [0, angle + 0.4, 0],
+      });
+    }
+  }
+
+  private buildColumnarBasalt(batch: VoxelBatch, cx: number, cz: number, _biome: BiomeDefinition, _rng: () => number): void {
+    const basaltMat = 0x1e272e;
+    const ironstone = 0x2f3640;
+    for (let i = 0; i < 16; i++) {
+      const a = (i / 16) * Math.PI * 2 + 0.3;
+      const r = 21 + (i % 4) * 2.2;
+      const bx = cx + Math.cos(a) * r;
+      const bz = cz + Math.sin(a) * r;
+      const height = 1.2 + (i % 5) * 0.65;
+      batch.add(bx, height / 2, bz, 1.1, height, 1.1, i % 3 === 0 ? ironstone : basaltMat, {
+        rotation: [0, Math.PI / 6, 0],
+      });
+    }
+  }
+
+  private buildFluoriteCluster(group: THREE.Group, cx: number, cz: number): void {
+    const colors = [0xdf84ff, 0x7ef9ff, 0xb892ff];
+    for (let i = 0; i < 6; i++) {
+      const geo = new THREE.OctahedronGeometry(0.9 + (i % 3) * 0.35, 0);
+      const col = colors[i % colors.length];
+      const mesh = new THREE.Mesh(
+        geo,
+        new THREE.MeshStandardMaterial({
+          color: col,
+          roughness: 0.2,
+          metalness: 0.1,
+          emissive: col,
+          emissiveIntensity: 0.35,
+        }),
+      );
+      const a = (i / 6) * Math.PI * 2;
+      mesh.position.set(cx + Math.cos(a) * 14, 1.2 + (i % 2) * 0.4, cz + Math.sin(a) * 14);
+      mesh.rotation.set(0.3 * i, a, 0.2 * i);
+      group.add(mesh);
+    }
+  }
+
+  private addCalibrationTower(
+    batch: VoxelBatch,
+    group: THREE.Group,
+    x: number,
+    z: number,
+    height = 12,
+  ): void {
+    const postMat = 0x24323d;
+    const whiteMat = 0xf5f7fb;
+    const redMat = 0xd32f2f;
+
+    // 4 Corner vertical lattice posts
+    const halfW = 0.45;
+    for (const dx of [-halfW, halfW]) {
+      for (const dz of [-halfW, halfW]) {
+        batch.add(x + dx, height / 2, z + dz, 0.1, height, 0.1, postMat);
+      }
+    }
+
+    // Horizontal tie-beams & metric colored survey bands every 2m
+    for (let y = 1; y < height; y += 2) {
+      const isRed = Math.floor(y / 2) % 2 === 1;
+      const bandColor = isRed ? redMat : whiteMat;
+      batch.add(x, y, z, halfW * 2 + 0.12, 0.18, halfW * 2 + 0.12, bandColor);
+
+      // Diagonal cross-bracing struts
+      batch.add(x, y + 1, z, halfW * 2 - 0.05, 0.08, halfW * 2 - 0.05, postMat, {
+        rotation: [0, Math.PI / 4, 0],
+      });
+    }
+
+    // Calibration crossbar arms at 5m and 10m
+    for (const y of [5, 10]) {
+      batch.add(x + 0.8, y, z, 1.4, 0.12, 0.12, 0xc7a35d);
+      batch.add(x + 1.5, y, z, 0.08, 0.35, 0.35, 0xffd7a1, { glow: true });
+    }
+
+    // Tower summit sighting disk and obstruction marker beacon
+    batch.add(x, height + 0.15, z, 1.1, 0.08, 1.1, 0xc7a35d);
+    batch.add(x, height + 0.45, z, 0.25, 0.35, 0.25, redMat, { glow: true });
+
+    const beacon = addGlowSprite(group, this.glowTexture, [x, height + 0.5, z], 2.2, '#ff4d4f', 0.6);
+    beacon.userData.pulse = Math.random() * Math.PI * 2;
+
+    this.addCollider(new THREE.Vector3(x, height / 2, z), new THREE.Vector3(1.3, height, 1.3));
+  }
+
+  private buildFieldInstruments(): void {
+    // 1. Mechanics Canyon Lookout Theodolite (surveying downrange ballistic trajectory)
+    this.addTheodolite(
+      'theodolite_canyon',
+      'Mechanics Canyon Theodolite',
+      'Ballistic Trajectory & Range Calibration Sighting Station',
+      -12,
+      0,
+      -48,
+      Math.PI * 0.85,
+      -0.15,
+      -8.6,
+    );
+
+    // 2. Thermodynamics Rim Theodolite (surveying geothermal pools & pistons)
+    this.addTheodolite(
+      'theodolite_thermo',
+      'Thermal Basin Theodolite',
+      'Geothermal Plumes & Carnot Heat Chamber Sighting Station',
+      42,
+      0,
+      -22,
+      -Math.PI * 0.35,
+      -0.08,
+      -4.6,
+    );
+
+    // 3. Optics Observation Ridge Theodolite (surveying interference & prism dispersion)
+    this.addTheodolite(
+      'theodolite_optics',
+      'Optics Promontory Theodolite',
+      'Spectral Refraction & Wavefront Sighting Station',
+      -36,
+      0,
+      48,
+      Math.PI * 0.25,
+      -0.05,
+      -2.9,
+    );
+  }
+
+  getTheodolites(): TheodoliteStation[] {
+    return [...this.theodolites];
+  }
+
+  getNearestTheodolite(pos: THREE.Vector3, maxDist = 2.4): TheodoliteStation | null {
+    let nearest: TheodoliteStation | null = null;
+    let minDist = maxDist;
+    for (const theo of this.theodolites) {
+      const d = pos.distanceTo(theo.position);
+      if (d < minDist) {
+        minDist = d;
+        nearest = theo;
+      }
+    }
+    return nearest;
+  }
+
+  private addTheodolite(
+    id: string,
+    name: string,
+    subtitle: string,
+    x: number,
+    y: number,
+    z: number,
+    yaw: number,
+    lookPitch = 0,
+    elevationAngleDeg = 0,
+  ): void {
+    const group = new THREE.Group();
+    group.name = 'Surveyor_Theodolite';
+    group.position.set(x, y, z);
+    group.rotation.y = yaw;
+
+    const oakMat = new THREE.MeshStandardMaterial({
+      color: 0x3e2719,
+      roughness: 0.75,
+      metalness: 0.05,
+    });
+    const brassMat = new THREE.MeshStandardMaterial({
+      color: 0xd4af37,
+      roughness: 0.35,
+      metalness: 0.85,
+    });
+    const spiritMat = new THREE.MeshPhysicalMaterial({
+      color: 0x4dd0e1,
+      transparent: true,
+      opacity: 0.65,
+      roughness: 0.1,
+      transmission: 0.6,
+      depthWrite: false,
+    });
+    const lensMat = new THREE.MeshStandardMaterial({
+      color: 0x1890ff,
+      roughness: 0.1,
+      emissive: 0x00bcd4,
+      emissiveIntensity: 0.3,
+    });
+
+    // 1. Oak Tripod with brass shoe tips (3 legs spreading out)
+    const legLength = 1.25;
+    const legSpread = 0.42;
+    for (let i = 0; i < 3; i++) {
+      const legAngle = (i / 3) * Math.PI * 2;
+      const legX = Math.cos(legAngle) * legSpread;
+      const legZ = Math.sin(legAngle) * legSpread;
+
+      const legGeo = new THREE.CylinderGeometry(0.022, 0.016, legLength, 6);
+      const legMesh = new THREE.Mesh(legGeo, oakMat);
+      legMesh.position.set(legX * 0.5, 0.58, legZ * 0.5);
+      legMesh.rotation.x = Math.PI / 2 - 0.34;
+      legMesh.castShadow = true;
+      group.add(legMesh);
+
+      const shoeGeo = new THREE.ConeGeometry(0.025, 0.08, 6);
+      const shoeMesh = new THREE.Mesh(shoeGeo, brassMat);
+      shoeMesh.position.set(legX, 0.04, legZ);
+      group.add(shoeMesh);
+    }
+
+    // 2. Central Brass Tribrach Leveling Head at y = 1.15
+    const headPlate = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.14, 0.04, 16), brassMat);
+    headPlate.position.y = 1.15;
+    group.add(headPlate);
+
+    // 3 Leveling thumb-screws
+    for (let i = 0; i < 3; i++) {
+      const a = (i / 3) * Math.PI * 2 + Math.PI / 6;
+      const screw = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.018, 0.05, 8), brassMat);
+      screw.position.set(Math.cos(a) * 0.085, 1.18, Math.sin(a) * 0.085);
+      group.add(screw);
+    }
+
+    // 3. Graduated Azimuth Circle Plate (360-degree vernier)
+    const azCircle = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.1, 0.03, 24), brassMat);
+    azCircle.position.y = 1.22;
+    group.add(azCircle);
+
+    // 4. Dual Brass Vertical Standards (upright supports)
+    const standL = new THREE.Mesh(new THREE.BoxGeometry(0.025, 0.22, 0.04), brassMat);
+    standL.position.set(-0.065, 1.34, 0);
+    group.add(standL);
+    const standR = new THREE.Mesh(new THREE.BoxGeometry(0.025, 0.22, 0.04), brassMat);
+    standR.position.set(0.065, 1.34, 0);
+    group.add(standR);
+
+    // Vertical Altitude Circle on left standard
+    const altCircle = new THREE.Mesh(new THREE.TorusGeometry(0.048, 0.008, 6, 20), brassMat);
+    altCircle.position.set(-0.078, 1.42, 0);
+    altCircle.rotation.y = Math.PI / 2;
+    group.add(altCircle);
+
+    // 5. Spirit Level Vial atop the transit axis
+    const levelVial = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.09, 8), spiritMat);
+    levelVial.rotation.z = Math.PI / 2;
+    levelVial.position.set(0, 1.48, 0.03);
+    group.add(levelVial);
+
+    // 6. Brass Optical Telescope Tube with lookPitch
+    const teleGroup = new THREE.Group();
+    teleGroup.position.set(0, 1.42, 0);
+    teleGroup.rotation.x = lookPitch;
+
+    const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.024, 0.54, 16), brassMat);
+    barrel.rotation.x = Math.PI / 2;
+    barrel.castShadow = true;
+    teleGroup.add(barrel);
+
+    const hood = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.028, 0.1, 16), brassMat);
+    hood.rotation.x = Math.PI / 2;
+    hood.position.z = -0.28;
+    teleGroup.add(hood);
+
+    const lens = new THREE.Mesh(new THREE.CircleGeometry(0.031, 16), lensMat);
+    lens.position.z = -0.32;
+    lens.rotation.y = Math.PI;
+    teleGroup.add(lens);
+
+    const focusKnob = new THREE.Mesh(new THREE.CylinderGeometry(0.016, 0.016, 0.07, 12), brassMat);
+    focusKnob.rotation.z = Math.PI / 2;
+    focusKnob.position.set(0, 0.025, -0.06);
+    teleGroup.add(focusKnob);
+
+    const eyepiece = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.024, 0.08, 12), brassMat);
+    eyepiece.rotation.x = Math.PI / 2;
+    eyepiece.position.z = 0.28;
+    teleGroup.add(eyepiece);
+
+    group.add(teleGroup);
+    this.proceduralGroup.add(group);
+
+    // Physical Box Collider
+    this.addCollider(new THREE.Vector3(x, y + 0.65, z), new THREE.Vector3(0.9, 1.35, 0.9));
+
+    this.theodolites.push({
+      id,
+      name,
+      subtitle,
+      position: new THREE.Vector3(x, y, z),
+      eyePosition: new THREE.Vector3(x, y + 1.44, z),
+      lookYaw: yaw,
+      lookPitch,
+      elevationAngleDeg,
+    });
+  }
+
   private createAmbientLife(): void {
     const rng = seededRandom(91873);
     const glow = this.glowTexture;
@@ -892,7 +1484,7 @@ export class World {
       const z = biome.center.y + Math.sin(angle) * radius;
       const y = 1.2 + rng() * 5;
       const color = biome.accent;
-      const sprite = addGlowSprite(this.group, glow, [x, y, z], 0.32 + rng() * 0.35, color, 0.32 + rng() * 0.3);
+      const sprite = addGlowSprite(this.proceduralGroup, glow, [x, y, z], 0.32 + rng() * 0.35, color, 0.32 + rng() * 0.3);
       this.ambient.push({
         sprite,
         origin: new THREE.Vector3(x, y, z),
@@ -926,12 +1518,12 @@ export class World {
     });
     this.dust = new THREE.Points(geometry, material);
     this.dust.frustumCulled = false;
-    this.group.add(this.dust);
+    this.proceduralGroup.add(this.dust);
   }
 
   private createClouds(): void {
     const rng = seededRandom(55291);
-    this.group.add(this.cloudGroup);
+    this.proceduralGroup.add(this.cloudGroup);
     for (let i = 0; i < 70; i++) {
       const angle = rng() * Math.PI * 2;
       const radius = 30 + rng() * 200;
@@ -951,9 +1543,18 @@ export class World {
     });
   }
 
+  /** Static obstacle that belongs to the procedural environment. */
   addCollider(center: THREE.Vector3, size: THREE.Vector3): THREE.Box3 {
     const box = new THREE.Box3().setFromCenterAndSize(center, size);
-    this.baseColliders.push(box);
+    this.proceduralColliders.push(box);
+    if (!this.blenderModelVisible) this.colliders.push(box);
+    return box;
+  }
+
+  /** Static obstacle that belongs to a live interactive station in either world. */
+  addStationCollider(center: THREE.Vector3, size: THREE.Vector3): THREE.Box3 {
+    const box = new THREE.Box3().setFromCenterAndSize(center, size);
+    this.stationColliders.push(box);
     this.colliders.push(box);
     return box;
   }
@@ -983,55 +1584,62 @@ export class World {
     playerLight.position.set(playerPosition.x, playerPosition.y + 2.2, playerPosition.z);
     playerLight.intensity = 0.42 + Math.sin(elapsed * 1.1) * 0.06;
 
-    this.coreGroup.children.forEach((child) => {
-      if (child.userData.spin) child.rotation.y += dt * child.userData.spin * 0.35;
-      if (child instanceof THREE.Mesh && child.geometry instanceof THREE.IcosahedronGeometry) {
-        child.rotation.y += dt * 0.09;
-        child.rotation.x += dt * 0.025;
-      }
-    });
-    this.coreGroup.position.y = Math.sin(elapsed * 0.45) * 0.16;
-
-    for (const spec of this.ambient) {
-      const t = elapsed * spec.speed + spec.phase;
-      spec.sprite.position.x = spec.origin.x + Math.sin(t * 1.1) * spec.amplitude;
-      spec.sprite.position.y = spec.origin.y + Math.sin(t * 1.7) * 0.42;
-      spec.sprite.position.z = spec.origin.z + Math.cos(t * 0.9) * spec.amplitude;
-      const pulse = 0.25 + (Math.sin(t * 2.2) * 0.5 + 0.5) * 0.25;
-      (spec.sprite.material as THREE.SpriteMaterial).opacity = pulse;
+    // Play all kinematic animations while the Blender world is on screen
+    if (this.blenderModelVisible && this.blenderMixer) {
+      this.blenderMixer.update(dt);
     }
 
-    if (this.dust) {
-      const positions = this.dust.geometry.getAttribute('position') as THREE.BufferAttribute;
-      for (let i = 0; i < positions.count; i++) {
-        const base = this.dustOrigin;
-        positions.setY(i, base[i * 3 + 1] + Math.sin(elapsed * 0.15 + i * 0.8) * 0.35);
-        if (i % 7 === 0) {
-          positions.setX(i, base[i * 3] + Math.sin(elapsed * 0.08 + i) * 1.6);
-          positions.setZ(i, base[i * 3 + 2] + Math.cos(elapsed * 0.07 + i) * 1.6);
-        }
-      }
-      positions.needsUpdate = true;
-    }
-
-    for (const group of this.biomeDecor) {
-      group.traverse((child) => {
-        if (child.userData.planet !== undefined) {
-          child.position.y += Math.sin(elapsed * 0.35 + child.userData.planet) * 0.0008;
-          child.rotation.y += dt * 0.045;
-        }
-        if (child.userData.pylon !== undefined) {
-          const mat = (child as THREE.Sprite).material as THREE.SpriteMaterial;
-          mat.opacity = 0.26 + Math.sin(elapsed * 2.3 + child.userData.pylon) * 0.12;
-        }
-        if (child.userData.pulse !== undefined) {
-          const mat = (child as THREE.Sprite).material as THREE.SpriteMaterial;
-          mat.opacity = 0.22 + Math.sin(elapsed * 1.4 + child.userData.pulse) * 0.1;
+    if (!this.blenderModelVisible) {
+      this.coreGroup.children.forEach((child) => {
+        if (child.userData.spin) child.rotation.y += dt * child.userData.spin * 0.35;
+        if (child instanceof THREE.Mesh && child.geometry instanceof THREE.IcosahedronGeometry) {
+          child.rotation.y += dt * 0.09;
+          child.rotation.x += dt * 0.025;
         }
       });
-    }
-    for (const label of this.gateLabels) {
-      (label.material as THREE.SpriteMaterial).opacity = 0.9 + Math.sin(elapsed * 0.8) * 0.05;
+      this.coreGroup.position.y = Math.sin(elapsed * 0.45) * 0.16;
+
+      for (const spec of this.ambient) {
+        const t = elapsed * spec.speed + spec.phase;
+        spec.sprite.position.x = spec.origin.x + Math.sin(t * 1.1) * spec.amplitude;
+        spec.sprite.position.y = spec.origin.y + Math.sin(t * 1.7) * 0.42;
+        spec.sprite.position.z = spec.origin.z + Math.cos(t * 0.9) * spec.amplitude;
+        const pulse = 0.25 + (Math.sin(t * 2.2) * 0.5 + 0.5) * 0.25;
+        (spec.sprite.material as THREE.SpriteMaterial).opacity = pulse;
+      }
+
+      if (this.dust) {
+        const positions = this.dust.geometry.getAttribute('position') as THREE.BufferAttribute;
+        for (let i = 0; i < positions.count; i++) {
+          const base = this.dustOrigin;
+          positions.setY(i, base[i * 3 + 1] + Math.sin(elapsed * 0.15 + i * 0.8) * 0.35);
+          if (i % 7 === 0) {
+            positions.setX(i, base[i * 3] + Math.sin(elapsed * 0.08 + i) * 1.6);
+            positions.setZ(i, base[i * 3 + 2] + Math.cos(elapsed * 0.07 + i) * 1.6);
+          }
+        }
+        positions.needsUpdate = true;
+      }
+
+      for (const group of this.biomeDecor) {
+        group.traverse((child) => {
+          if (child.userData.planet !== undefined) {
+            child.position.y += Math.sin(elapsed * 0.35 + child.userData.planet) * 0.0008;
+            child.rotation.y += dt * 0.045;
+          }
+          if (child.userData.pylon !== undefined) {
+            const mat = (child as THREE.Sprite).material as THREE.SpriteMaterial;
+            mat.opacity = 0.26 + Math.sin(elapsed * 2.3 + child.userData.pylon) * 0.12;
+          }
+          if (child.userData.pulse !== undefined) {
+            const mat = (child as THREE.Sprite).material as THREE.SpriteMaterial;
+            mat.opacity = 0.22 + Math.sin(elapsed * 1.4 + child.userData.pulse) * 0.1;
+          }
+        });
+      }
+      for (const label of this.gateLabels) {
+        (label.material as THREE.SpriteMaterial).opacity = 0.9 + Math.sin(elapsed * 0.8) * 0.05;
+      }
     }
 
     this.updateSkyAndLighting(dt, elapsed);
@@ -1213,4 +1821,10 @@ export class World {
 
 function plusJitter(rng: () => number, amount: number): number {
   return (rng() - 0.5) * amount;
+}
+
+function materialName(material: THREE.Material | THREE.Material[] | undefined): string {
+  if (!material) return '';
+  const list = Array.isArray(material) ? material : [material];
+  return list.map((entry) => entry?.name ?? '').join('|');
 }

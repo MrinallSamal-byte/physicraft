@@ -8,7 +8,7 @@ import {
   type BiomeDefinition,
   type EnvironmentState,
 } from './config';
-import { clamp } from './core/utils';
+import { clamp, isVisibleInHierarchy } from './core/utils';
 import { GraphBoard } from './game/GraphBoard';
 import { TelemetryInspector, type WandReading } from './game/TelemetryInspector';
 import { TimeController, type TimeMode } from './game/TimeController';
@@ -19,9 +19,11 @@ import { Viewmodel, type ToolId } from './player/Viewmodel';
 import type { StationTab } from './stations/BaseExperiment';
 import { StationRegistry, type Station } from './stations/registry';
 import { GameUI, type BadgePayload, type GameUICallbacks, type MapStation } from './ui/GameUI';
-import { World } from './world/World';
-import { sound } from './audio/SoundEngine';
+import { World, type TheodoliteStation } from './world/World';
+import { sound, type SurfaceMaterial } from './audio/SoundEngine';
 import { VoxelBuilder } from './game/VoxelBuilder';
+import { SeatingManager } from './game/SeatingManager';
+import { AtmosphereFX } from './world/AtmosphereFX';
 import { BLOCK_PALETTE_ORDER, type VoxelBlockType } from './world/textures';
 
 // ---------------------------------------------------------------------------
@@ -52,7 +54,6 @@ scene.add(camera);
 
 const env: EnvironmentState = { ...DEFAULT_ENVIRONMENT };
 const world = new World(scene);
-world.addCollider(new THREE.Vector3(0, 1.2, 0), new THREE.Vector3(5.4, 2.4, 5.4));
 
 const registry = new StationRegistry(scene, env);
 registry.addCollidersToWorld(world);
@@ -74,6 +75,66 @@ voxelBuilder.setOnBlockChanged(() => {
   ui.setPlacedBlocksCount(voxelBuilder.getAllPlacedBlocks().length);
 });
 player.setSlimeChecker((pos) => voxelBuilder.isStandingOnSlime(pos));
+
+function detectSurfaceMaterial(pos: THREE.Vector3): SurfaceMaterial {
+  const blockType = voxelBuilder.getBlockUnder(pos);
+  if (blockType) {
+    switch (blockType) {
+      case 'grass':
+      case 'dirt':
+        return 'grass';
+      case 'stone':
+      case 'cobblestone':
+        return 'marble';
+      case 'planks':
+      case 'tnt':
+        return 'timber';
+      case 'brick':
+      case 'obsidian':
+        return 'basalt';
+      case 'glass':
+      case 'diamond':
+      case 'glowstone':
+        return 'crystal';
+      case 'slime':
+        return 'slime';
+      case 'iron':
+      case 'gold':
+      case 'redstone':
+        return 'metal';
+    }
+  }
+
+  const distCenter = Math.hypot(pos.x, pos.z);
+  if (distCenter < 28) {
+    return 'marble';
+  }
+  if (pos.z < -28) {
+    return 'sandstone';
+  }
+  if (pos.x > 28 && pos.z <= 0) {
+    return 'basalt';
+  }
+  if (pos.x > 28 && pos.z > 0) {
+    return 'metal';
+  }
+  if (pos.x < -20 && pos.z > 25) {
+    return 'crystal';
+  }
+  return 'grass';
+}
+
+player.setSurfaceDetector((pos) => detectSurfaceMaterial(pos));
+
+const seatingManager = new SeatingManager(scene);
+seatingManager.setPlayerRef(player);
+seatingManager.setOnSeatedChange((seated, seatName) => {
+  ui.setSeated(seated, seatName);
+});
+const atmosphereFX = new AtmosphereFX(scene);
+
+let mineRepeatTimer = 0;
+let placeRepeatTimer = 0;
 
 // ---------------------------------------------------------------------------
 // Persistence
@@ -158,8 +219,54 @@ function modalOpen(): boolean {
     ui.isBadgeOpen ||
     ui.isInventoryOpen ||
     ui.isPioneersOpen ||
-    ui.isGuideOpen
+    ui.isGuideOpen ||
+    ui.isScholarOpen
   );
+}
+
+let activeTheodolite: TheodoliteStation | null = null;
+let savedPlayerPoseBeforeTheodolite: { pos: THREE.Vector3; yaw: number; pitch: number; fov: number } | null = null;
+
+function enterTheodoliteMode(station: TheodoliteStation): void {
+  activeTheodolite = station;
+  savedPlayerPoseBeforeTheodolite = {
+    pos: player.position.clone(),
+    yaw: player.yaw,
+    pitch: player.pitch,
+    fov: camera.fov,
+  };
+  player.teleport(new THREE.Vector3(station.eyePosition.x, station.position.y, station.eyePosition.z), station.lookYaw);
+  player.pitch = station.lookPitch;
+  camera.position.copy(player.eyePosition);
+  camera.rotation.set(player.pitch, player.yaw, 0, 'YXZ');
+  camera.fov = 20;
+  camera.updateProjectionMatrix();
+
+  sound.playTheodoliteSight(true);
+  ui.setTheodoliteActive(true, station);
+  ui.updateTheodoliteReadout(player.yaw, player.pitch);
+  ui.toast(
+    station.name,
+    'Surveyor Optical Sighting active. Rotate to measure Azimuth & Elevation. Press E or Esc to step back.',
+    '#ffd59e',
+    '🔭',
+    3400,
+  );
+}
+
+function exitTheodoliteMode(): void {
+  if (!activeTheodolite) return;
+  activeTheodolite = null;
+  camera.fov = savedPlayerPoseBeforeTheodolite?.fov ?? 74;
+  camera.updateProjectionMatrix();
+  if (savedPlayerPoseBeforeTheodolite) {
+    player.teleport(savedPlayerPoseBeforeTheodolite.pos, savedPlayerPoseBeforeTheodolite.yaw);
+    player.pitch = savedPlayerPoseBeforeTheodolite.pitch;
+  }
+  savedPlayerPoseBeforeTheodolite = null;
+  sound.playTheodoliteSight(false);
+  ui.setTheodoliteActive(false);
+  ui.toast('Theodolite Transit disengaged', 'Returned to standard surveyor field view.', '#ffd59e', '🔭', 2200);
 }
 
 const callbacks = makeCallbacks();
@@ -192,6 +299,62 @@ function handleBlockSelect(type: VoxelBlockType): void {
   viewmodel.setHeldBlock(type);
   ui.setActiveVoxelBlock(type);
   blockPaletteIndex = BLOCK_PALETTE_ORDER.indexOf(type);
+}
+
+let blenderToggleBusy = false;
+
+async function toggleBlenderWorld(): Promise<void> {
+  if (blenderToggleBusy) return;
+  blenderToggleBusy = true;
+  const next = !world.isBlenderModelVisible();
+  sound.playClick();
+  if (next && !world.isBlenderModelReady()) {
+    ui.toast(
+      'Loading Blender 3D world…',
+      'Streaming the production scene. The voxel sandbox stays playable meanwhile.',
+      '#f4cf86',
+      '⏳',
+      3200,
+    );
+  }
+
+  try {
+    const ok = await world.setBlenderModelVisible(next);
+    if (!ok) {
+      ui.setBlenderModelActive(world.isBlenderModelVisible());
+      ui.toast(
+        'Blender world unavailable',
+        'The production GLB could not be loaded. The voxel world is still active.',
+        '#ff9a8a',
+        '⚠',
+        4200,
+      );
+      return;
+    }
+
+    ui.setBlenderModelActive(next);
+    ui.toast(
+      next ? 'Blender 3D View Active' : 'Switched to Voxel Mode',
+      next
+        ? 'Full high-fidelity models, armillary & memorials enabled. Press Shift+B to toggle.'
+        : 'Switched to lightweight voxel sandbox. Press Shift+B to return to Blender 3D.',
+      next ? '#f4cf86' : '#7ef9ff',
+      next ? '🎨' : '🧊',
+      3200,
+    );
+  } catch (error) {
+    console.warn('Blender world toggle failed:', error);
+    ui.setBlenderModelActive(world.isBlenderModelVisible());
+    ui.toast(
+      'Blender world unavailable',
+      'The production GLB could not be loaded. The voxel world is still active.',
+      '#ff9a8a',
+      '⚠',
+      4200,
+    );
+  } finally {
+    blenderToggleBusy = false;
+  }
 }
 
 function toggleDayNight(): void {
@@ -250,20 +413,22 @@ function makeCallbacks(): GameUICallbacks {
       ui.setPlacedBlocksCount(0);
     },
     onInventoryClose: requestControl,
-    onToggleBlenderModel: () => {
-      const next = !world.isBlenderModelVisible();
-      world.setBlenderModelVisible(next);
-      ui.setBlenderModelActive(next);
-      sound.playClick();
+    onToggleLantern: () => {
+      const on = player.toggleLantern();
+      ui.setLanternActive(on);
       ui.toast(
-        next ? 'Blender 3D View Active' : 'Switched to Voxel Mode',
-        next
-          ? 'Full high-fidelity models, armillary & memorials enabled. Press B to toggle.'
-          : 'Switched to lightweight voxel sandbox. Press B to return to Blender 3D.',
-        next ? '#f4cf86' : '#7ef9ff',
-        next ? '🎨' : '🧊',
-        3200,
+        on ? 'Carbide Lantern Lit' : 'Carbide Lantern Extinguished',
+        on ? 'Golden beam illuminated for dark depths and caves. Press X to extinguish.' : 'Lantern stowed to preserve carbide fuel.',
+        '#ffd59e',
+        '🏮',
+        2400,
       );
+    },
+    onExitTheodolite: () => {
+      exitTheodoliteMode();
+    },
+    onToggleBlenderModel: () => {
+      void toggleBlenderWorld();
     },
     onStationMinimizeChange: (minimized: boolean) => {
       if (orbit) {
@@ -274,10 +439,23 @@ function makeCallbacks(): GameUICallbacks {
       input.exitPointerLock();
       ui.openPioneers();
     },
-    onTravelCoordinates: (x: number, z: number) => {
-      player.teleport(new THREE.Vector3(x, 1.68, z), 0);
+    onTravelCoordinates: (x: number, z: number, stationId?: string) => {
+      if (activeTheodolite) exitTheodoliteMode();
+      if (ui.isStationOpen) ui.closeStation();
+      // For any apparatus or monument at (x, z), stand 6.5m in front along vector toward the hub (0, 0)
+      const toHub = new THREE.Vector2(-x, -z).normalize();
+      const targetX = x + toHub.x * 6.5;
+      const targetZ = z + toHub.y * 6.5;
+      const targetYaw = Math.atan2(-toHub.x, -toHub.y); // Face directly toward the apparatus
+      player.teleport(new THREE.Vector3(targetX, 0, targetZ), targetYaw);
+      camera.position.copy(player.eyePosition);
+      camera.rotation.set(player.pitch, player.yaw, 0, 'YXZ');
+      camera.fov = 74;
+      camera.updateProjectionMatrix();
+      ui.setPlayerPose(player.position.x, player.position.z, player.yaw);
       viewmodel.triggerSwing();
       sound.playDiscoveryJingle();
+      requestControl();
     },
   };
 }
@@ -287,6 +465,7 @@ function makeCallbacks(): GameUICallbacks {
 // ---------------------------------------------------------------------------
 
 function focusStation(station: Station, tab: StationTab = 'observe'): void {
+  if (activeTheodolite) exitTheodoliteMode();
   if (focusedStation === station && ui.isStationOpen) return;
   if (focusedStation) {
     // Travel-between-stations is handled by closing the old panel first; this
@@ -370,6 +549,7 @@ const orbitDirection = new THREE.Vector3();
 function isSolidHit(hit: THREE.Intersection): boolean {
   const mesh = hit.object as THREE.Mesh;
   if (!(mesh as THREE.Mesh & { isMesh?: boolean }).isMesh) return false;
+  if (!isVisibleInHierarchy(mesh)) return false;
   const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
   return materials.some((material) => Boolean(material) && !material.transparent && material.opacity > 0.5);
 }
@@ -393,7 +573,7 @@ function orbitClearSamples(station: Station, radius: number, height: number, tar
     orbitRaycaster.camera = camera;
     orbitRaycaster.near = 0.05;
     orbitRaycaster.far = Math.max(0.08, distance - 0.35);
-    const hit = orbitRaycaster.intersectObject(world.group, true).find(isSolidHit);
+    const hit = orbitRaycaster.intersectObject(world.getActiveEnvironmentGroup(), true).find(isSolidHit);
     if (!hit) clear++;
   }
   return clear;
@@ -491,6 +671,7 @@ function closeFocus(): void {
 function beginExpedition(): void {
   if (started) return;
   started = true;
+  sound.startAmbience();
   player.enabled = true;
   input.autoLock = true;
   ui.setPausePrompt(false);
@@ -612,6 +793,7 @@ function applyEnvironment(next: EnvironmentState): void {
 // ---------------------------------------------------------------------------
 
 function travelToStation(id: string): void {
+  if (activeTheodolite) exitTheodoliteMode();
   const station = registry.getById(id);
   if (!station) return;
   if (ui.isStationOpen) ui.closeStation();
@@ -633,6 +815,7 @@ function travelToStation(id: string): void {
 }
 
 function travelToHub(): void {
+  if (activeTheodolite) exitTheodoliteMode();
   if (ui.isStationOpen) ui.closeStation();
   player.teleport(new THREE.Vector3(0, 0, 12.5), 0);
   camera.position.copy(player.eyePosition);
@@ -910,8 +1093,53 @@ function refreshHud(): void {
 
   if (focusedStation) return;
 
+  if (activeTheodolite) {
+    ui.setInteract({
+      title: activeTheodolite.name,
+      meta: `${activeTheodolite.subtitle} · 3.7× Optical Sighting Active`,
+      accent: '#ffd59e',
+      key: 'E',
+      eyebrow: 'STEP BACK FROM THEODOLITE',
+    });
+    ui.setTimeStatus(time.getStatus());
+    return;
+  }
+
+  const nearScholar = seatingManager.getNearestScholar(player.position, 3.8);
+
+  if (seatingManager.isPlayerSeated()) {
+    ui.setSeated(true, seatingManager.getCurrentSeat()?.name);
+    if (nearScholar && !modalOpen()) {
+      ui.setInteract({
+        title: nearScholar.name,
+        meta: `${nearScholar.discipline} · Authentic Historical Discourse`,
+        accent: '#f4cf86',
+        key: 'E',
+        eyebrow: 'CONVERSE WITH THEORIST',
+      });
+    } else {
+      ui.setInteract(null);
+    }
+    ui.setTimeStatus(time.getStatus());
+    return;
+  }
+  ui.setSeated(false);
+
   const nearest = nearestStation(72);
-  if (nearest && started) {
+  let interactSet = false;
+
+  if (nearScholar && !modalOpen()) {
+    ui.setInteract({
+      title: nearScholar.name,
+      meta: `${nearScholar.discipline} · Authentic Historical Discourse`,
+      accent: '#f4cf86',
+      key: 'E',
+      eyebrow: 'CONVERSE WITH THEORIST',
+    });
+    interactSet = true;
+  }
+
+  if (!interactSet && nearest && started) {
     const meta = nearest.station.experiment.meta;
     ui.setFieldCard({
       title: `${meta.number} · ${meta.shortTitle}`,
@@ -924,12 +1152,44 @@ function refreshHud(): void {
         title: meta.title,
         meta: `${nearest.station.biome.shortName} · ${nearest.station.solved ? 'DISCOVERED' : 'MASTER TRIAL AVAILABLE'}`,
         accent: nearest.station.accent,
+        key: 'E',
+        eyebrow: 'INSPECT EXPERIMENT',
       });
-    } else {
-      ui.setInteract(null);
+      interactSet = true;
     }
   } else {
     ui.setFieldCard(started ? null : { title: 'The Hall of Constants', distance: 0, meta: 'Spawn rotunda', accent: '#ffd48b' });
+  }
+
+  if (!interactSet && !modalOpen()) {
+    const nearTheodolite = world.getNearestTheodolite(player.position, 2.5);
+    if (nearTheodolite) {
+      ui.setInteract({
+        title: nearTheodolite.name,
+        meta: `${nearTheodolite.subtitle} · Precision 3.7× Optical Sighting Transit`,
+        accent: '#ffd59e',
+        key: 'E',
+        eyebrow: 'LOOK THROUGH THEODOLITE',
+      });
+      interactSet = true;
+    }
+  }
+
+  if (!interactSet && !modalOpen()) {
+    const nearbySeat = seatingManager.getNearestAvailableSeat(player.position, 2.4);
+    if (nearbySeat) {
+      ui.setInteract({
+        title: nearbySeat.name,
+        meta: `Rest & Contemplate Physics · ${nearbySeat.locationName}`,
+        accent: '#ffd7a1',
+        key: 'C',
+        eyebrow: 'STUDY BENCH',
+      });
+      interactSet = true;
+    }
+  }
+
+  if (!interactSet) {
     ui.setInteract(null);
   }
 
@@ -1031,6 +1291,7 @@ function updateWand(dt: number): void {
 
 function syncOverlayPause(): void {
   const open = modalOpen();
+  sound.setAmbienceMuted(open || ui.isStationOpen);
   if (open && !pausedByOverlay && time.isActive && time.mode !== 'paused' && time.mode !== 'rewind') {
     pausedByOverlay = true;
     overlayResumeMode = time.mode;
@@ -1055,6 +1316,10 @@ input.onAction((action) => {
   if (!started || ui.isIntroOpen) return;
 
   if (action === 'escape') {
+    if (activeTheodolite) {
+      exitTheodoliteMode();
+      return;
+    }
     if (ui.closeTopOverlay()) return;
     if (ui.isStationOpen) {
       ui.closeStation();
@@ -1078,9 +1343,31 @@ input.onAction((action) => {
     case 'blender':
       callbacks.onToggleBlenderModel?.();
       break;
+    case 'sit':
+      seatingManager.toggleSit(player.position);
+      ui.setSeated(seatingManager.isPlayerSeated(), seatingManager.getCurrentSeat()?.name);
+      break;
     case 'interact': {
+      if (activeTheodolite) {
+        exitTheodoliteMode();
+        return;
+      }
       if (ui.isStationOpen) {
         ui.closeStation();
+        return;
+      }
+      const nearScholar = seatingManager.getNearestScholar(player.position, 3.8);
+      if (nearScholar) {
+        const dialogue = seatingManager.getScholarDialogue(nearScholar.id);
+        if (dialogue) {
+          input.exitPointerLock();
+          ui.openScholar(dialogue);
+          return;
+        }
+      }
+      const nearTheodolite = world.getNearestTheodolite(player.position, 2.5);
+      if (nearTheodolite) {
+        enterTheodoliteMode(nearTheodolite);
         return;
       }
       const nearest = nearestStation(11.8);
@@ -1160,6 +1447,9 @@ input.onAction((action) => {
     case 'builder':
       if (activeTool === 'block') selectTool('wand');
       else selectTool('block');
+      break;
+    case 'lantern':
+      callbacks.onToggleLantern?.();
       break;
     case 'daynight':
       toggleDayNight();
@@ -1274,6 +1564,12 @@ function frame(now: number): void {
 
   if (orbit) {
     updateOrbit(dt);
+  } else if (activeTheodolite) {
+    player.position.set(activeTheodolite.eyePosition.x, activeTheodolite.position.y, activeTheodolite.eyePosition.z);
+    player.update(dt, 0);
+    camera.position.copy(player.eyePosition);
+    camera.rotation.set(player.pitch, player.yaw, 0, 'YXZ');
+    ui.updateTheodoliteReadout(player.yaw, player.pitch);
   } else if (player.enabled && !modalOpen()) {
     player.update(dt, env.gravity);
   }
@@ -1282,29 +1578,52 @@ function frame(now: number): void {
   if (!orbit && player.enabled) {
     const moveSpeed = Math.hypot(player.velocity.x, player.velocity.z) / 5.2;
     viewmodel.update(dt, elapsed, THREE.MathUtils.clamp(moveSpeed, 0, 1), player.sprinting);
-    viewmodel.setVisible(!modalOpen() && started && !ui.isIntroOpen);
+    viewmodel.setVisible(!modalOpen() && started && !ui.isIntroOpen && !activeTheodolite);
   } else {
     viewmodel.setVisible(false);
   }
 
   const clicks = input.consumeClicks();
-  if (!modalOpen() && !ui.isStationOpen && player.enabled) {
-    if (clicks.left && activeTool === 'block') {
+  if (!modalOpen() && !ui.isStationOpen && player.enabled && activeTool === 'block') {
+    if (clicks.left) {
       const broke = voxelBuilder.breakBlock((origin, force) => player.applyImpulse(origin, force));
       if (broke) viewmodel.triggerSwing();
+      mineRepeatTimer = 0.22;
+    } else if (input.isLeftDown) {
+      mineRepeatTimer -= dt;
+      if (mineRepeatTimer <= 0) {
+        mineRepeatTimer = 0.18;
+        const broke = voxelBuilder.breakBlock((origin, force) => player.applyImpulse(origin, force));
+        if (broke) viewmodel.triggerSwing();
+      }
+    } else {
+      mineRepeatTimer = 0;
     }
-    if (clicks.right && activeTool === 'block') {
+
+    if (clicks.right) {
       const placed = voxelBuilder.placeBlock(player.position);
       if (placed) viewmodel.triggerSwing();
+      placeRepeatTimer = 0.24;
+    } else if (input.isRightDown) {
+      placeRepeatTimer -= dt;
+      if (placeRepeatTimer <= 0) {
+        placeRepeatTimer = 0.2;
+        const placed = voxelBuilder.placeBlock(player.position);
+        if (placed) viewmodel.triggerSwing();
+      }
+    } else {
+      placeRepeatTimer = 0;
     }
   }
 
   if (!modalOpen() && !ui.isStationOpen && player.enabled && activeTool === 'block') {
-    voxelBuilder.updateTargeting([world.group]);
+    voxelBuilder.updateTargeting([world.getActiveEnvironmentGroup()]);
   } else {
     voxelBuilder.clearTargeting();
   }
   voxelBuilder.update(dt);
+  seatingManager.update(dt, world.getTimeOfDay());
+  atmosphereFX.update(dt, player.position, world.getTimeOfDay());
 
   syncOverlayPause();
 
@@ -1315,6 +1634,10 @@ function frame(now: number): void {
       updateObservationState();
       checkChallenge();
     }
+  }
+
+  if (started) {
+    sound.updateAmbience(player.position);
   }
 
   world.update(dt, elapsed, player.position);
@@ -1376,10 +1699,24 @@ if (import.meta.env.DEV) {
     breakBlock: () => voxelBuilder.breakBlock((origin, force) => player.applyImpulse(origin, force)),
     breakAt: (x: number, y: number, z: number) => voxelBuilder.breakAt(x, y, z, (origin, force) => player.applyImpulse(origin, force)),
     voxelCount: () => voxelBuilder.getAllPlacedBlocks().length,
+    targeting: () => voxelBuilder.getTargetingInfo(),
     clearBlocks: () => voxelBuilder.clearAll(),
     setTime: (hours: number) => { world.setTimeOfDay(hours); ui.setTimeOfDay(hours); },
     getTime: () => world.getTimeOfDay(),
     toggleDayNight: () => toggleDayNight(),
+    teleport: (x: number, z: number, yaw = 0) => player.teleport(new THREE.Vector3(x, 1.68, z), yaw),
+    blender: {
+      ready: () => world.isBlenderModelReady(),
+      active: () => world.isBlenderModelVisible(),
+      toggle: () => world.setBlenderModelVisible(!world.isBlenderModelVisible()),
+      set: (visible: boolean) => world.setBlenderModelVisible(visible),
+      colliders: () => ({
+        total: world.colliders.length,
+        procedural: world.proceduralColliders.length,
+        stations: world.stationColliders.length,
+        blender: world.blenderColliders.length,
+      }),
+    },
     player: () => ({
       position: { x: player.position.x, y: player.position.y, z: player.position.z },
       velocity: { x: player.velocity.x, y: player.velocity.y, z: player.velocity.z },
@@ -1395,6 +1732,27 @@ if (import.meta.env.DEV) {
       progress: registry.getProgress(),
       time: time.getStatus(),
     }),
+    seating: {
+      sit: (seatId?: string) => {
+        if (seatId) {
+          const s = seatingManager.getAllSeats().find((st) => st.id === seatId);
+          if (s) return seatingManager.sit(s);
+        }
+        return seatingManager.toggleSit(player.position);
+      },
+      stand: () => seatingManager.stand(),
+      isSeated: () => seatingManager.isPlayerSeated(),
+      current: () => seatingManager.getCurrentSeat(),
+      seats: () => seatingManager.getAllSeats(),
+      scholars: () =>
+        seatingManager.getScholars().map((s) => ({
+          id: s.id,
+          name: s.name,
+          discipline: s.discipline,
+          seatId: s.seatId,
+        })),
+      dialogue: (scholarId: string) => seatingManager.getScholarDialogue(scholarId),
+    },
     stations: () => registry.stations.map((station) => station.id),
   };
 }
@@ -1416,10 +1774,28 @@ declare global {
       breakBlock: () => boolean;
       breakAt: (x: number, y: number, z: number) => boolean;
       voxelCount: () => number;
+      targeting: () => unknown;
       clearBlocks: () => void;
       setTime: (hours: number) => void;
       getTime: () => number;
       toggleDayNight: () => void;
+      teleport: (x: number, z: number, yaw?: number) => void;
+      seating: {
+        sit: (seatId?: string) => boolean;
+        stand: () => void;
+        isSeated: () => boolean;
+        current: () => unknown;
+        seats: () => unknown[];
+        scholars: () => unknown[];
+        dialogue: (scholarId: string) => unknown;
+      };
+      blender: {
+        ready: () => boolean;
+        active: () => boolean;
+        toggle: () => Promise<boolean>;
+        set: (visible: boolean) => Promise<boolean>;
+        colliders: () => { total: number; procedural: number; stations: number; blender: number };
+      };
       player: () => {
         position: { x: number; y: number; z: number };
         velocity: { x: number; y: number; z: number };

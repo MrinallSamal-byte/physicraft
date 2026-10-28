@@ -19,6 +19,11 @@ export class PlayerController {
   enabled = true;
   sprinting = false;
   moving = false;
+  isSeated = false;
+  private seatPosition = new THREE.Vector3();
+  private seatYaw = 0;
+  private sitEyeOffset = 0;
+  private onStandUp: (() => void) | null = null;
   private bobTime = 0;
   private stepDistance = 0;
   private landingKick = 0;
@@ -29,6 +34,9 @@ export class PlayerController {
   private fovBase = 74;
   private targetFov = 74;
   private slimeChecker: ((position: THREE.Vector3) => boolean) | null = null;
+  private lanternActive = false;
+  private lanternLight: THREE.PointLight;
+  private surfaceDetector: ((pos: THREE.Vector3) => string) | null = null;
 
   constructor(
     private camera: THREE.PerspectiveCamera,
@@ -38,6 +46,12 @@ export class PlayerController {
     this.camera.fov = this.fovBase;
     this.camera.updateProjectionMatrix();
     this.camera.position.copy(this.eyePosition);
+
+    this.lanternLight = new THREE.PointLight(0xffd59e, 0, 24, 1.8);
+    this.lanternLight.castShadow = true;
+    this.lanternLight.shadow.bias = -0.002;
+    this.camera.add(this.lanternLight);
+    this.lanternLight.position.set(0.25, -0.2, -0.4);
   }
 
   setColliders(colliders: THREE.Box3[]): void {
@@ -46,6 +60,28 @@ export class PlayerController {
 
   setSlimeChecker(checker: (position: THREE.Vector3) => boolean): void {
     this.slimeChecker = checker;
+  }
+
+  setSurfaceDetector(detector: (pos: THREE.Vector3) => string): void {
+    this.surfaceDetector = detector;
+  }
+
+  toggleLantern(): boolean {
+    this.lanternActive = !this.lanternActive;
+    this.lanternLight.intensity = this.lanternActive ? 2.8 : 0;
+    sound.playLanternToggle(this.lanternActive);
+    return this.lanternActive;
+  }
+
+  isLanternActive(): boolean {
+    return this.lanternActive;
+  }
+
+  setLanternActive(active: boolean): void {
+    if (this.lanternActive === active) return;
+    this.lanternActive = active;
+    this.lanternLight.intensity = active ? 2.8 : 0;
+    sound.playLanternToggle(active);
   }
 
   applyImpulse(origin: THREE.Vector3, force: number): void {
@@ -104,6 +140,23 @@ export class PlayerController {
     this.targetFov = fov;
   }
 
+  setOnStandUp(callback: () => void): void {
+    this.onStandUp = callback;
+  }
+
+  setSeated(seated: boolean, position?: THREE.Vector3, yaw?: number): void {
+    this.isSeated = seated;
+    if (seated) {
+      if (position) {
+        this.seatPosition.copy(position);
+        this.position.copy(position);
+      }
+      if (yaw !== undefined) this.yaw = yaw;
+      this.velocity.set(0, 0, 0);
+      this.grounded = true;
+    }
+  }
+
   update(dt: number, gravity: number): void {
     if (!this.enabled) return;
     dt = Math.min(dt, 1 / 30);
@@ -111,6 +164,37 @@ export class PlayerController {
     this.applyLookDelta(look.x, look.y);
 
     const keys = this.input.keys;
+
+    if (this.isSeated) {
+      // If player wants to move while seated, trigger stand up
+      const wantsMove =
+        keys.has('KeyW') ||
+        keys.has('KeyS') ||
+        keys.has('KeyA') ||
+        keys.has('KeyD') ||
+        keys.has('ArrowUp') ||
+        keys.has('ArrowDown') ||
+        keys.has('ArrowLeft') ||
+        keys.has('ArrowRight') ||
+        keys.has('Space');
+
+      if (wantsMove && this.onStandUp) {
+        this.onStandUp();
+        return;
+      }
+
+      this.velocity.set(0, 0, 0);
+      this.grounded = true;
+      this.sprinting = false;
+      this.moving = false;
+      this.position.lerp(this.seatPosition, dt * 10);
+      this.sitEyeOffset = damp(this.sitEyeOffset, -0.73, 8, dt);
+      this.updateCamera(dt, 0);
+      return;
+    }
+
+    this.sitEyeOffset = damp(this.sitEyeOffset, 0, 8, dt);
+
     const forward = this.getPlanarForward();
     const right = this.getPlanarRight();
     const wish = new THREE.Vector3();
@@ -147,7 +231,8 @@ export class PlayerController {
     // Resolve horizontal movement first so ledges feel predictable.
     this.tryMoveAxis('x', desired.x);
     this.tryMoveAxis('z', desired.z);
-    this.tryMoveAxis('y', desired.y);
+    const desiredY = this.position.y + this.velocity.y * dt;
+    this.tryMoveAxis('y', desiredY);
 
     this.resolveDepenetration();
 
@@ -203,6 +288,12 @@ export class PlayerController {
       this.teleport(new THREE.Vector3(0, 0, 14), 0);
     }
 
+    if (this.lanternActive) {
+      // Subtle organic fuel flicker in the surveyor's lantern flame
+      this.lanternLight.intensity =
+        2.6 + Math.sin(this.bobTime * 3.8) * 0.18 + Math.cos(this.bobTime * 7.1) * 0.08;
+    }
+
     const horizontalSpeed = Math.hypot(this.velocity.x, this.velocity.z);
     if (this.grounded && horizontalSpeed > 0.5) {
       this.bobTime += dt * horizontalSpeed * 1.55;
@@ -210,7 +301,8 @@ export class PlayerController {
       if (this.stepDistance > (this.sprinting ? 2.4 : 1.9)) {
         this.stepDistance = 0;
         this.onFootstep?.(this.position, this.sprinting ? 1 : 0.62);
-        sound.playFootstep();
+        const material = this.surfaceDetector ? this.surfaceDetector(this.position) : 'stone';
+        sound.playFootstep(material);
       }
     }
     this.landingKick = damp(this.landingKick, 0, 8, dt);
@@ -252,6 +344,7 @@ export class PlayerController {
           }
         }
         if (stepped) {
+          this.grounded = true;
           return;
         }
         this.position.y = originalY;
@@ -301,38 +394,47 @@ export class PlayerController {
   }
 
   private resolveDepenetration(): void {
-    const minX = this.position.x - PLAYER_RADIUS;
-    const maxX = this.position.x + PLAYER_RADIUS;
-    const minZ = this.position.z - PLAYER_RADIUS;
-    const maxZ = this.position.z + PLAYER_RADIUS;
+    let minX = this.position.x - PLAYER_RADIUS;
+    let maxX = this.position.x + PLAYER_RADIUS;
+    let minZ = this.position.z - PLAYER_RADIUS;
+    let maxZ = this.position.z + PLAYER_RADIUS;
     const minY = this.position.y + 0.05;
     const maxY = this.position.y + PLAYER_HEIGHT;
 
-    for (const collider of this.colliders) {
-      if (
-        maxX > collider.min.x &&
-        minX < collider.max.x &&
-        maxY > collider.min.y &&
-        minY < collider.max.y &&
-        maxZ > collider.min.z &&
-        minZ < collider.max.z
-      ) {
-        const pushLeft = collider.min.x - maxX;
-        const pushRight = collider.max.x - minX;
-        const pushBack = collider.min.z - maxZ;
-        const pushFront = collider.max.z - minZ;
+    for (let pass = 0; pass < 2; pass++) {
+      let moved = false;
+      for (const collider of this.colliders) {
+        if (
+          maxX > collider.min.x &&
+          minX < collider.max.x &&
+          maxY > collider.min.y &&
+          minY < collider.max.y &&
+          maxZ > collider.min.z &&
+          minZ < collider.max.z
+        ) {
+          const pushLeft = collider.min.x - maxX;
+          const pushRight = collider.max.x - minX;
+          const pushBack = collider.min.z - maxZ;
+          const pushFront = collider.max.z - minZ;
 
-        const pushX = Math.abs(pushLeft) < Math.abs(pushRight) ? pushLeft : pushRight;
-        const pushZ = Math.abs(pushBack) < Math.abs(pushFront) ? pushBack : pushFront;
+          const pushX = Math.abs(pushLeft) < Math.abs(pushRight) ? pushLeft : pushRight;
+          const pushZ = Math.abs(pushBack) < Math.abs(pushFront) ? pushBack : pushFront;
 
-        if (Math.abs(pushX) < Math.abs(pushZ)) {
-          this.position.x += pushX;
-          this.velocity.x = 0;
-        } else {
-          this.position.z += pushZ;
-          this.velocity.z = 0;
+          if (Math.abs(pushX) < Math.abs(pushZ)) {
+            this.position.x += pushX;
+            this.velocity.x = 0;
+          } else {
+            this.position.z += pushZ;
+            this.velocity.z = 0;
+          }
+          minX = this.position.x - PLAYER_RADIUS;
+          maxX = this.position.x + PLAYER_RADIUS;
+          minZ = this.position.z - PLAYER_RADIUS;
+          maxZ = this.position.z + PLAYER_RADIUS;
+          moved = true;
         }
       }
+      if (!moved) break;
     }
   }
 
@@ -368,7 +470,7 @@ export class PlayerController {
     this.camera.updateProjectionMatrix();
     this.camera.position.set(
       this.position.x + bobX,
-      this.position.y + WORLD.eyeHeight + bobY - this.landingKick,
+      this.position.y + WORLD.eyeHeight + this.sitEyeOffset + bobY - this.landingKick,
       this.position.z,
     );
     this.camera.rotation.set(this.pitch, this.yaw, roll, 'YXZ');

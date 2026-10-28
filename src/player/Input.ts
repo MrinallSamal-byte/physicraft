@@ -1,5 +1,7 @@
 export type InputAction =
   | 'interact'
+  | 'sit'
+  | 'lantern'
   | 'map'
   | 'help'
   | 'goggles'
@@ -33,6 +35,8 @@ export class Input {
   mouseY = 0;
   leftClick = false;
   rightClick = false;
+  isLeftDown = false;
+  isRightDown = false;
   private listeners = new Set<ActionListener>();
   private keydownListeners = new Set<(event: KeyboardEvent) => void>();
   private clickListeners = new Set<(event: MouseEvent) => void>();
@@ -40,11 +44,13 @@ export class Input {
   private disposed = false;
   private actionKeys: Record<string, InputAction> = {
     e: 'interact',
+    c: 'sit',
+    x: 'lantern',
     m: 'map',
     h: 'help',
     v: 'goggles',
     t: 'time',
-    b: 'blender',
+    b: 'builder',
     i: 'inventory',
     k: 'book',
     g: 'graph',
@@ -136,7 +142,8 @@ export class Input {
     }
     this.keys.add(event.code);
     for (const listener of this.keydownListeners) listener(event);
-    const action = this.actionKeys[event.key.toLowerCase() === 'escape' ? 'Escape' : event.key.toLowerCase()];
+    const key = event.key.toLowerCase() === 'escape' ? 'Escape' : event.key.toLowerCase();
+    const action = key === 'b' && event.shiftKey ? 'blender' : this.actionKeys[key];
     if (action) {
       const active = document.activeElement;
       if (active instanceof HTMLInputElement || active instanceof HTMLSelectElement || active instanceof HTMLTextAreaElement) return;
@@ -168,8 +175,14 @@ export class Input {
       }
       return;
     }
-    if (event.button === 0) this.leftClick = true;
-    if (event.button === 2) this.rightClick = true;
+    if (event.button === 0) {
+      this.leftClick = true;
+      this.isLeftDown = true;
+    }
+    if (event.button === 2) {
+      this.rightClick = true;
+      this.isRightDown = true;
+    }
     this.clickListeners.forEach((listener) => listener(event));
   };
 
@@ -177,12 +190,15 @@ export class Input {
     this.keys.clear();
     this.leftClick = false;
     this.rightClick = false;
+    this.isLeftDown = false;
+    this.isRightDown = false;
     this.mouseX = 0;
     this.mouseY = 0;
   };
 
-  private onMouseUp = (): void => {
-    // Clicks are consumed on the next simulation tick.
+  private onMouseUp = (event: MouseEvent): void => {
+    if (event.button === 0) this.isLeftDown = false;
+    if (event.button === 2) this.isRightDown = false;
   };
 
   private preventContextMenu = (event: MouseEvent): void => {

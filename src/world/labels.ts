@@ -19,9 +19,11 @@ export function makeCanvasTexture(
   const canvas = document.createElement('canvas');
   canvas.width = width;
   canvas.height = height;
-  const ctx = canvas.getContext('2d')!;
-  ctx.clearRect(0, 0, width, height);
-  draw(ctx, width, height);
+  const ctx = canvas.getContext('2d');
+  if (ctx) {
+    ctx.clearRect(0, 0, width, height);
+    draw(ctx, width, height);
+  }
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
   texture.anisotropy = 4;
@@ -207,3 +209,104 @@ export function roundRect(
   ctx.arcTo(x, y, x + width, y, r);
   ctx.closePath();
 }
+
+/**
+ * Creates an engraved stone-plaque texture for Biome Milestone Equation Stelae
+ */
+export function makeEquationPlaqueTexture(
+  discipline: string,
+  lawName: string,
+  formula: string,
+  subFormula: string,
+  citation: string,
+  accent: string,
+  width = 1024,
+  height = 640,
+): THREE.CanvasTexture {
+  return makeCanvasTexture(
+    (ctx, w, h) => {
+      // 1. Deep brushed slate slab background
+      ctx.fillStyle = '#0a131c';
+      roundRect(ctx, 20, 20, w - 40, h - 40, 24);
+      ctx.fill();
+
+      // 2. Dual engraved brass/accent border
+      ctx.strokeStyle = accent;
+      ctx.lineWidth = 3;
+      ctx.globalAlpha = 0.75;
+      roundRect(ctx, 32, 32, w - 64, h - 64, 18);
+      ctx.stroke();
+
+      ctx.strokeStyle = '#c7a35d';
+      ctx.lineWidth = 1;
+      ctx.globalAlpha = 0.45;
+      roundRect(ctx, 42, 42, w - 84, h - 84, 12);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+
+      // 3. Discipline Header Pill
+      ctx.fillStyle = accent;
+      ctx.font = '700 24px "JetBrains Mono", monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+      ctx.fillText(`— SECTOR ${discipline.toUpperCase()} —`, w / 2, 60);
+
+      // 4. Governing Law Title
+      ctx.fillStyle = '#f5f0e3';
+      ctx.font = '700 36px "Space Grotesk", sans-serif';
+      ctx.fillText(lawName, w / 2, 108);
+
+      // Gold rule line
+      ctx.strokeStyle = '#c7a35d';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(w * 0.2, 164);
+      ctx.lineTo(w * 0.8, 164);
+      ctx.stroke();
+
+      // 5. Mathematical Formula Box
+      ctx.fillStyle = 'rgba(2, 6, 12, 0.65)';
+      roundRect(ctx, 60, 190, w - 120, 150, 14);
+      ctx.fill();
+      ctx.strokeStyle = accent;
+      ctx.lineWidth = 1.5;
+      ctx.globalAlpha = 0.5;
+      roundRect(ctx, 60, 190, w - 120, 150, 14);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+
+      ctx.fillStyle = accent;
+      ctx.font = '700 48px "JetBrains Mono", monospace';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(formula, w / 2, 265);
+
+      // 6. Sub-principle
+      ctx.fillStyle = '#cbd5e1';
+      ctx.font = 'italic 25px Georgia, serif';
+      ctx.textBaseline = 'top';
+      ctx.fillText(subFormula, w / 2, 375);
+
+      // 7. Treatise Citation
+      ctx.fillStyle = '#94a3b8';
+      ctx.font = '500 22px "JetBrains Mono", monospace';
+      ctx.fillText(`Historic Treatise: ${citation}`, w / 2, 470);
+
+      // Corner rosettes / brass studs
+      const studPos = [
+        [50, 50],
+        [w - 50, 50],
+        [50, h - 50],
+        [w - 50, h - 50],
+      ];
+      ctx.fillStyle = '#c7a35d';
+      for (const [sx, sy] of studPos) {
+        ctx.beginPath();
+        ctx.arc(sx, sy, 7, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    },
+    width,
+    height,
+  );
+}
+

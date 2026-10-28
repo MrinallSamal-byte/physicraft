@@ -6,12 +6,14 @@
  */
 
 import * as THREE from 'three';
+import { WORLD } from '../config';
 import {
   type VoxelBlockType,
   VOXEL_BLOCKS,
   textureRegistry,
 } from '../world/textures';
 import { sound } from '../audio/SoundEngine';
+import { isVisibleInHierarchy } from '../core/utils';
 
 interface PlacedBlock {
   key: string;
@@ -49,7 +51,7 @@ export class VoxelBuilder {
   private activeBlockType: VoxelBlockType = 'grass';
   private particles: VoxelParticle[] = [];
   private primedTntList: PrimedTnt[] = [];
-  private reachDistance = 6.2;
+  private reachDistance = 12.0;
   private enabled = true;
   private playerCollidersRef: THREE.Box3[] | null = null;
   private onBlockChanged: (() => void) | null = null;
@@ -105,13 +107,24 @@ export class VoxelBuilder {
   }
 
   /**
+   * Finds placed block near given coordinates
+   */
+  getBlockAt(pos: THREE.Vector3): PlacedBlock | undefined {
+    const key = `${pos.x},${pos.y},${pos.z}`;
+    const direct = this.placedBlocks.get(key);
+    if (direct) return direct;
+    for (const block of this.placedBlocks.values()) {
+      if (block.position.distanceTo(pos) < 0.25) return block;
+    }
+    return undefined;
+  }
+
+  /**
    * Updates raycast targeting from crosshair
    */
   updateTargeting(worldMeshes: THREE.Object3D[]): void {
     if (!this.enabled) {
-      this.selectionBox.visible = false;
-      this.targetCoords = null;
-      this.placeCoords = null;
+      this.clearTargeting();
       return;
     }
 
@@ -122,19 +135,14 @@ export class VoxelBuilder {
     const hits = this.raycaster.intersectObjects(targets, true);
 
     const hit = hits.find(
-      (h) => h.object.visible && h.object !== this.selectionBox && !h.object.name.includes('particle'),
+      (h) =>
+        h.object !== this.selectionBox &&
+        !h.object.name.includes('particle') &&
+        isVisibleInHierarchy(h.object),
     );
 
     if (hit && hit.face && hit.point) {
       const normal = hit.face.normal.clone().transformDirection(hit.object.matrixWorld).normalize();
-      
-      // Calculate targeted voxel integer coordinates
-      const hitCenter = hit.point.clone().sub(normal.clone().multiplyScalar(0.02));
-      const bx = Math.floor(hitCenter.x + 0.5);
-      const by = Math.floor(hitCenter.y + 0.5);
-      const bz = Math.floor(hitCenter.z + 0.5);
-
-      this.targetCoords = new THREE.Vector3(bx, by, bz);
       this.targetFaceNormal = normal.clone();
 
       // Strictly snap to the dominant cardinal face normal
@@ -149,28 +157,85 @@ export class VoxelBuilder {
       } else {
         nz = normal.z >= 0 ? 1 : -1;
       }
-      this.placeCoords = new THREE.Vector3(bx + nx, by + ny, bz + nz);
 
-      // Disallow targeting if placement overlaps solid world colliders (apparatus, pillars, trees)
-      if (this.playerCollidersRef) {
+      // Check if we hit an already placed block
+      const voxelKey = hit.object.userData?.voxelKey;
+      const hitPlaced = voxelKey ? this.placedBlocks.get(voxelKey) : undefined;
+
+      if (hitPlaced) {
+        this.targetCoords = hitPlaced.position.clone();
+        this.placeCoords = hitPlaced.position.clone().add(new THREE.Vector3(nx, ny, nz));
+        this.selectionBox.position.copy(hitPlaced.position);
+      } else {
+        // Natural world terrain or apparatus surface
+        const hitCenter = hit.point.clone().sub(normal.clone().multiplyScalar(0.02));
+        const bx = Math.floor(hitCenter.x + 0.5);
+        const bz = Math.floor(hitCenter.z + 0.5);
+        let by = 0.5;
+        if (Math.abs(normal.y) > 0.6) {
+          by = normal.y > 0 ? Math.floor(hit.point.y) + 0.5 : Math.floor(hit.point.y) - 0.5;
+        } else {
+          by = Math.floor(hitCenter.y) + 0.5;
+        }
+
+        this.targetCoords = new THREE.Vector3(bx, by, bz);
+        this.placeCoords = new THREE.Vector3(bx + nx, by + ny, bz + nz);
+        this.selectionBox.position.copy(this.placeCoords);
+      }
+
+      // Disallow placement (only) if placement overlaps solid world colliders
+      if (this.placeCoords && this.playerCollidersRef) {
         const testBlockBox = new THREE.Box3(
           new THREE.Vector3(this.placeCoords.x - 0.49, this.placeCoords.y - 0.49, this.placeCoords.z - 0.49),
           new THREE.Vector3(this.placeCoords.x + 0.49, this.placeCoords.y + 0.49, this.placeCoords.z + 0.49),
         );
         for (const col of this.playerCollidersRef) {
           if (col.intersectsBox(testBlockBox)) {
-            this.clearTargeting();
-            return;
+            this.placeCoords = null;
+            break;
           }
         }
       }
 
-      // Position the selection wireframe box
-      this.selectionBox.position.set(bx, by, bz);
       this.selectionBox.visible = true;
-    } else {
-      this.clearTargeting();
+      return;
     }
+
+    // Ground plane fallback (raycasting against floor plane y = 0)
+    const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+    const groundHit = new THREE.Vector3();
+    if (this.raycaster.ray.intersectPlane(groundPlane, groundHit)) {
+      const dist = this.camera.position.distanceTo(groundHit);
+      const islandDist = Math.hypot(groundHit.x, groundHit.z);
+      if (dist <= this.reachDistance && islandDist <= WORLD.radius) {
+        const bx = Math.floor(groundHit.x + 0.5);
+        const bz = Math.floor(groundHit.z + 0.5);
+        const by = 0.5; // flush with bedrock floor y=0
+
+        this.placeCoords = new THREE.Vector3(bx, by, bz);
+        this.targetCoords = new THREE.Vector3(bx, -0.5, bz);
+        this.targetFaceNormal = new THREE.Vector3(0, 1, 0);
+
+        if (this.playerCollidersRef) {
+          const testBlockBox = new THREE.Box3(
+            new THREE.Vector3(bx - 0.49, by - 0.49, bz - 0.49),
+            new THREE.Vector3(bx + 0.49, by + 0.49, bz + 0.49),
+          );
+          for (const col of this.playerCollidersRef) {
+            if (col.intersectsBox(testBlockBox)) {
+              this.placeCoords = null;
+              break;
+            }
+          }
+        }
+
+        this.selectionBox.position.set(bx, by, bz);
+        this.selectionBox.visible = true;
+        return;
+      }
+    }
+
+    this.clearTargeting();
   }
 
   clearTargeting(): void {
@@ -178,6 +243,14 @@ export class VoxelBuilder {
     this.targetCoords = null;
     this.placeCoords = null;
     this.targetFaceNormal = null;
+  }
+
+  getTargetingInfo(): { target: THREE.Vector3 | null; place: THREE.Vector3 | null; faceNormal: THREE.Vector3 | null } {
+    return {
+      target: this.targetCoords ? this.targetCoords.clone() : null,
+      place: this.placeCoords ? this.placeCoords.clone() : null,
+      faceNormal: this.targetFaceNormal ? this.targetFaceNormal.clone() : null,
+    };
   }
 
   /**
@@ -256,7 +329,7 @@ export class VoxelBuilder {
       this.playerCollidersRef.push(collider);
     }
 
-    sound.playBlockPlace();
+    sound.playBlockPlace(type);
     this.onBlockChanged?.();
 
     return true;
@@ -266,14 +339,15 @@ export class VoxelBuilder {
    * Places a block at explicit integer voxel coordinates (for building structures & scripts)
    */
   placeAt(x: number, y: number, z: number, type: VoxelBlockType = this.activeBlockType): boolean {
-    const key = `${x},${y},${z}`;
+    const actualY = Number.isInteger(y) ? y + 0.5 : y;
+    const key = `${x},${actualY},${z}`;
     if (this.placedBlocks.has(key)) return false;
 
     const meta = VOXEL_BLOCKS[type];
     const material = textureRegistry.getMaterial(type);
     const geometry = new THREE.BoxGeometry(1, 1, 1);
     const mesh = new THREE.Mesh(geometry, material);
-    mesh.position.set(x, y, z);
+    mesh.position.set(x, actualY, z);
     mesh.castShadow = !meta.transparent;
     mesh.receiveShadow = !meta.transparent;
     mesh.userData.voxelKey = key;
@@ -283,21 +357,21 @@ export class VoxelBuilder {
     this.group.add(mesh);
 
     const collider = new THREE.Box3(
-      new THREE.Vector3(x - 0.5, y - 0.5, z - 0.5),
-      new THREE.Vector3(x + 0.5, y + 0.5, z + 0.5),
+      new THREE.Vector3(x - 0.5, actualY - 0.5, z - 0.5),
+      new THREE.Vector3(x + 0.5, actualY + 0.5, z + 0.5),
     );
 
     let light: THREE.PointLight | undefined;
     if (meta.lightLevel && meta.lightLevel > 0) {
       light = new THREE.PointLight(meta.color, 1.8, 12, 1.8);
-      light.position.set(x, y + 0.5, z);
+      light.position.set(x, actualY + 0.5, z);
       this.group.add(light);
     }
 
     const record: PlacedBlock = {
       key,
       type,
-      position: new THREE.Vector3(x, y, z),
+      position: new THREE.Vector3(x, actualY, z),
       mesh,
       collider,
       light,
@@ -308,7 +382,7 @@ export class VoxelBuilder {
       this.playerCollidersRef.push(collider);
     }
 
-    sound.playBlockPlace();
+    sound.playBlockPlace(type);
     this.onBlockChanged?.();
     return true;
   }
@@ -317,8 +391,8 @@ export class VoxelBuilder {
    * Breaks block at explicit integer voxel coordinates
    */
   breakAt(x: number, y: number, z: number, onExplodePlayer?: (origin: THREE.Vector3, force: number) => void): boolean {
-    const key = `${x},${y},${z}`;
-    const record = this.placedBlocks.get(key);
+    const queryPos = new THREE.Vector3(x, Number.isInteger(y) ? y + 0.5 : y, z);
+    const record = this.getBlockAt(queryPos);
     if (!record) return false;
 
     if (record.type === 'tnt') {
@@ -338,8 +412,8 @@ export class VoxelBuilder {
       if (idx !== -1) this.playerCollidersRef.splice(idx, 1);
     }
 
-    this.placedBlocks.delete(key);
-    sound.playBlockBreak();
+    this.placedBlocks.delete(record.key);
+    sound.playBlockBreak(record.type);
     this.onBlockChanged?.();
     return true;
   }
@@ -350,12 +424,7 @@ export class VoxelBuilder {
   breakBlock(onExplodePlayer?: (origin: THREE.Vector3, force: number) => void): boolean {
     if (!this.enabled || !this.targetCoords) return false;
 
-    const x = this.targetCoords.x;
-    const y = this.targetCoords.y;
-    const z = this.targetCoords.z;
-    const key = `${x},${y},${z}`;
-
-    const record = this.placedBlocks.get(key);
+    const record = this.getBlockAt(this.targetCoords);
     if (!record) {
       // It's a natural/scenery block or world surface - spawn debris and play sound
       this.spawnDebris(this.targetCoords, 0x6e786b);
@@ -383,8 +452,8 @@ export class VoxelBuilder {
       if (idx !== -1) this.playerCollidersRef.splice(idx, 1);
     }
 
-    this.placedBlocks.delete(key);
-    sound.playBlockBreak();
+    this.placedBlocks.delete(record.key);
+    sound.playBlockBreak(record.type);
     this.onBlockChanged?.();
 
     return true;
@@ -461,12 +530,33 @@ export class VoxelBuilder {
    * Checks if position stands on a slime block
    */
   isStandingOnSlime(pos: THREE.Vector3): boolean {
-    const x = Math.floor(pos.x + 0.5);
-    const y = Math.floor(pos.y - 0.05);
-    const z = Math.floor(pos.z + 0.5);
-    const key = `${x},${y},${z}`;
-    const block = this.placedBlocks.get(key);
-    return block?.type === 'slime';
+    for (const block of this.placedBlocks.values()) {
+      if (block.type !== 'slime') continue;
+      const dx = Math.abs(pos.x - block.position.x);
+      const dz = Math.abs(pos.z - block.position.z);
+      const topY = block.position.y + 0.5;
+      const dy = pos.y - topY;
+      if (dx <= 0.65 && dz <= 0.65 && dy >= -0.15 && dy <= 0.25) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Returns the voxel block type immediately beneath or at the given coordinate, if one exists
+   */
+  getBlockUnder(pos: THREE.Vector3): VoxelBlockType | null {
+    for (const block of this.placedBlocks.values()) {
+      const dx = Math.abs(pos.x - block.position.x);
+      const dz = Math.abs(pos.z - block.position.z);
+      const topY = block.position.y + 0.5;
+      const dy = pos.y - topY;
+      if (dx <= 0.65 && dz <= 0.65 && dy >= -0.25 && dy <= 0.35) {
+        return block.type;
+      }
+    }
+    return null;
   }
 
   /**
